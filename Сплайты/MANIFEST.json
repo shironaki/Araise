@@ -1,0 +1,6 @@
+{
+  "project": "Shadow Ascension",
+  "version": "graphics-v1",
+  "source": "AI-generated art direction sheet",
+  "note": "Reference crops are art-direction assets, not yet production-transparent sprites. Next pass should generate isolated transparent spritesheets for player, shadows, enemies, VFX and modular tiles."
+}
