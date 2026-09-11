@@ -1,90 +1,72 @@
+/* ============================================================
+   SHADOW ASCENDANT — «Портальный охотник»
+   Аркадный рогалик на canvas. Один файл, без зависимостей.
+
+   Управление:
+     WASD / стрелки  — движение
+     Пробел          — удар
+     E               — поднять тень из павшего врага
+     Esc             — пауза
+     1 / 2 / 3       — выбор усиления
+   ============================================================ */
 (() => {
+  'use strict';
+
+  /* ==========================================================
+     DOM И ВВОД
+     ========================================================== */
+
   const C = document.querySelector('#canvas');
   const X = C.getContext('2d');
-  const W = C.width;
-  const H = C.height;
+  const $ = (id) => document.getElementById(id);
 
-  const $ = id => document.getElementById(id);
-  const K = {};
+  const K = Object.create(null); // нажатые клавиши
+  let stick = null;              // вектор виртуального стика (мобильные)
 
-  let stick = null;
+  /* Размер игрового мира в CSS-пикселях арены.
+     Пересчитывается при ресайзе, поэтому игра одинаково
+     выглядит на телефоне, планшете и мониторе. */
+  let W = 960;
+  let H = 600;
+  let DPR = 1;
 
-  // =========================================================
-  // CORE DATA
-  // =========================================================
+  /* ==========================================================
+     КОНСТАНТЫ
+     ========================================================== */
 
-  const ranks = ['E', 'D', 'C', 'B', 'A', 'S'];
+  const VERSION = '1.1.0';
+  const SAVE_KEY = 'shadow-ascendant';
 
-  const portalNames = [
+  const RANKS = ['E', 'D', 'C', 'B', 'A', 'S'];
+  const PORTAL_NAMES = [
     'РАЗЛОМ БЕЗМОЛВИЯ',
     'ЗАТОНУВШИЕ ВРАТА',
     'ЧЁРНЫЙ ЛАБИРИНТ',
-    'ЦИТАДЕЛЬ ПЕПЛА'
+    'ЦИТАДЕЛЬ ПЕПЛА',
+    'ПУСТОШЬ ОСКОЛКОВ',
+    'ТРОН БЕЗДНЫ'
   ];
 
-  const saved = JSON.parse(
-    localStorage.getItem('shadow-ascendant') ||
-    '{"portal":1,"vault":0,"shadows":[]}'
-  );
+  const MAX_FX = 420;        // предел частиц
+  const CORPSE_TTL = 9;      // сколько живёт труп под подъём
+  const RAISE_RANGE = 96;    // радиус подъёма тени
+  const BASE_ARMY_MAX = 8;   // базовый размер армии
+  const VAULT_LIMIT = 500;   // предел хранилища
+  const WAVE_GAP = 1.3;      // пауза между волнами
+  const SPAWN_STEP = 0.32;   // интервал появления врагов в волне
+  const LEVEL_HEAL = 0.2;    // доля HP, восстанавливаемая за уровень
+  const XP_GROWTH = 1.28;    // рост требования опыта
+  const BOSS_MINIONS = 10;   // предел врагов, которых плодит босс
+  const BOSS_HEAL = 0.3;     // доля HP, возвращаемая перед боем с боссом
+  const CONTACT_SLACK = 1;   // допуск на границе касания врага
+  const REACH_SLACK = 6;     // тень бьёт, не прижимаясь к цели вплотную
+  const APRON = 0.5;         // гистерезис подхода (защита от «зависания» на границе)
 
-  const meta = {
-    portal: saved.portal || 1,
-    vault: saved.vault || 0,
-    shadows: Array.isArray(saved.shadows) ? saved.shadows : []
-  };
+  /* ==========================================================
+     ТАБЛИЦЫ КОНТЕНТА
+     ========================================================== */
 
-  // Старый формат сохранения совместим с новым.
-  if (meta.shadows.length === 0 && meta.vault > 0) {
-    for (let i = 0; i < meta.vault; i++) {
-      meta.shadows.push('soldier');
-    }
-  }
-
-  const S = {
-    go: false,
-    pause: false,
-    choice: false,
-
-    kills: 0,
-    goal: 20,
-    wave: 0,
-
-    enemies: [],
-    corpses: [],
-    army: [],
-    fx: [],
-
-    last: 0,
-    waveTimer: 0
-  };
-
-  const P = {
-    x: 480,
-    y: 300,
-    r: 17,
-
-    hp: 100,
-    max: 100,
-
-    lvl: 1,
-    xp: 0,
-    next: 50,
-
-    dmg: 25,
-    spd: 245,
-
-    cd: 0,
-    flash: 0,
-    face: 0,
-
-    attackRange: 98
-  };
-
-  // =========================================================
-  // ENEMY TYPES
-  // =========================================================
-
-  const enemyTypes = {
+  const ENEMY_TYPES = {
     soldier: {
       name: 'ОХОТНИК',
       color: '#c13c67',
@@ -93,11 +75,8 @@
       speed: 58,
       radius: 14,
       damage: 7,
-      xp: 16,
-      shadowDamage: 12,
-      shadowSpeed: 160
+      xp: 16
     },
-
     runner: {
       name: 'БЕГУН',
       color: '#d45b89',
@@ -106,11 +85,8 @@
       speed: 105,
       radius: 11,
       damage: 5,
-      xp: 20,
-      shadowDamage: 9,
-      shadowSpeed: 205
+      xp: 20
     },
-
     brute: {
       name: 'БРУТ',
       color: '#b34758',
@@ -119,11 +95,8 @@
       speed: 37,
       radius: 20,
       damage: 13,
-      xp: 28,
-      shadowDamage: 20,
-      shadowSpeed: 120
+      xp: 28
     },
-
     caster: {
       name: 'ПРОКЛЯТЫЙ',
       color: '#824fc7',
@@ -132,320 +105,363 @@
       speed: 45,
       radius: 15,
       damage: 9,
-      xp: 32,
-      shadowDamage: 17,
-      shadowSpeed: 145
+      xp: 32
     }
   };
 
-  // =========================================================
-  // UTILS
-  // =========================================================
-
-  const dist = (a, b) =>
-    Math.hypot(a.x - b.x, a.y - b.y);
-
-  const clamp = (n, a, b) =>
-    Math.max(a, Math.min(b, n));
-
-  const save = () => {
-    localStorage.setItem(
-      'shadow-ascendant',
-      JSON.stringify({
-        portal: meta.portal,
-        vault: meta.vault,
-        shadows: meta.shadows
-      })
-    );
-  };
-
-  const rank = () =>
-    ranks[Math.min(
-      5,
-      Math.floor((meta.portal - 1) / 2)
-    )];
-
-  const portalName = () =>
-    portalNames[(meta.portal - 1) % portalNames.length];
-
-  const randomEnemyType = () => {
-    const r = Math.random();
-
-    if (meta.portal >= 3 && r < 0.16) {
-      return 'caster';
-    }
-
-    if (meta.portal >= 2 && r < 0.35) {
-      return 'brute';
-    }
-
-    if (r < 0.55) {
-      return 'runner';
-    }
-
-    return 'soldier';
-  };
-
-  // =========================================================
-  // UI
-  // =========================================================
-
-  function ui() {
-    $('level').textContent = `УР. ${P.lvl}`;
-
-    $('hptext').textContent =
-      `${Math.ceil(P.hp)} / ${P.max}`;
-
-    $('hp').style.width =
-      `${clamp(P.hp / P.max * 100, 0, 100)}%`;
-
-    $('xp').style.width =
-      `${clamp(P.xp / P.next * 100, 0, 100)}%`;
-
-    $('shadows').textContent =
-      S.army.length;
-
-    $('vault').textContent =
-      meta.shadows.length;
-
-    $('objective').textContent =
-      `ПОРТАЛ ${meta.portal}: ${S.kills} / ${S.goal} существ`;
-  }
-
-  // =========================================================
-  // PARTICLES
-  // =========================================================
-
-  function fx(x, y, color, amount = 8) {
-    while (amount--) {
-      const angle = Math.random() * Math.PI * 2;
-      const velocity = 35 + Math.random() * 110;
-
-      S.fx.push({
-        x,
-        y,
-
-        vx: Math.cos(angle) * velocity,
-        vy: Math.sin(angle) * velocity,
-
-        t: 0.5,
-        color
-      });
-    }
-  }
-
-  // =========================================================
-  // ENEMIES
-  // =========================================================
-
-  function spawn(type = randomEnemyType(), boss = false) {
-    const a = Math.random() * Math.PI * 2;
-
-    const distance = 330 + Math.random() * 90;
-
-    const cfg = boss
-      ? {
-          name: 'ХРАНИТЕЛЬ ВРАТ',
-          color: '#e98d39',
-          core: '#4a2614',
-          hp: 260 + meta.portal * 35,
-          speed: 48 + meta.portal * 2,
-          radius: 29,
-          damage: 18,
-          xp: 55,
-          shadowDamage: 28,
-          shadowSpeed: 115
-        }
-      : enemyTypes[type];
-
-    const hpScale =
-      boss
-        ? 1
-        : 1 + Math.max(0, meta.portal - 1) * 0.12;
-
-    S.enemies.push({
-      x: clamp(
-        P.x + Math.cos(a) * distance,
-        30,
-        W - 30
-      ),
-
-      y: clamp(
-        P.y + Math.sin(a) * distance,
-        30,
-        H - 30
-      ),
-
-      r: cfg.radius,
-
-      hp: cfg.hp * hpScale,
-      max: cfg.hp * hpScale,
-
-      speed: cfg.speed,
-      damage: cfg.damage,
-
-      xp: cfg.xp,
-
-      type: boss ? 'boss' : type,
-
-      shadowDamage: cfg.shadowDamage,
-      shadowSpeed: cfg.shadowSpeed,
-
-      hit: 0,
-      boss
-    });
-  }
-
-  function wave() {
-    S.wave++;
-
-    const amount =
-      3 +
-      S.wave * 2 +
-      Math.floor(meta.portal / 2);
-
-    for (let i = 0; i < amount; i++) {
-      setTimeout(() => {
-        if (S.go && !S.pause) {
-          spawn();
-        }
-      }, i * 310);
-    }
-  }
-
-  // =========================================================
-  // SHADOWS
-  // =========================================================
-
-  const shadowTypes = {
+  const SHADOW_TYPES = {
     soldier: {
       name: 'ВОИН ТЕНИ',
       color: '#7057db',
-      damage: 12,
-      speed: 160,
-      attackSpeed: 0.58,
+      damage: 10,
+      speed: 165,
+      attackSpeed: 0.62,
       radius: 11
     },
-
     runner: {
       name: 'ТЕНЬ-БЕГУН',
       color: '#4c8cff',
-      damage: 9,
-      speed: 205,
-      attackSpeed: 0.42,
+      damage: 8,
+      speed: 210,
+      attackSpeed: 0.48,
       radius: 9
     },
-
     brute: {
       name: 'ТЕНЬ-БРУТ',
       color: '#a54de0',
-      damage: 20,
-      speed: 120,
-      attackSpeed: 0.75,
+      damage: 15,
+      speed: 125,
+      attackSpeed: 0.82,
       radius: 15
     },
-
     caster: {
       name: 'ТЕНЬ-ПРОКЛЯТЫЙ',
       color: '#b15cff',
-      damage: 17,
-      speed: 145,
-      attackSpeed: 0.68,
+      damage: 13,
+      speed: 150,
+      attackSpeed: 0.72,
       radius: 11
     },
-
     boss: {
       name: 'ТЕНЬ ХРАНИТЕЛЯ',
       color: '#ff8b4c',
-      damage: 28,
-      speed: 115,
-      attackSpeed: 0.9,
+      damage: 20,
+      speed: 118,
+      attackSpeed: 0.95,
       radius: 17
     }
   };
 
-  const MAX_ARMY = 8;
+  const UPGRADES = [
+    {
+      id: 'blade',
+      name: 'КЛИНОК ТЕНИ',
+      desc: 'Урон удара +14',
+      apply: () => { P.dmg += 14; }
+    },
+    {
+      id: 'vitality',
+      name: 'ЖИВУЧЕСТЬ',
+      desc: 'Макс. HP +35 и лечение',
+      apply: () => {
+        P.maxHp += 35;
+        P.hp = Math.min(P.maxHp, P.hp + 35);
+      }
+    },
+    {
+      id: 'step',
+      name: 'ШАГ СКВОЗЬ ТЬМУ',
+      desc: 'Скорость +45',
+      apply: () => { P.spd += 45; }
+    },
+    {
+      id: 'reach',
+      name: 'РАЗРЫВ',
+      desc: 'Дальность удара +18',
+      apply: () => { P.attackRange += 18; }
+    },
+    {
+      id: 'commander',
+      name: 'КОМАНДИР ТЕНЕЙ',
+      desc: 'Максимум армии +1',
+      apply: () => { P.armyMax += 1; }
+    },
+    {
+      id: 'wrath',
+      name: 'ЯРОСТЬ ТЕНЕЙ',
+      desc: 'Урон теней +30%',
+      apply: () => { P.armyDmg += 0.3; }
+    },
+    {
+      id: 'haste',
+      name: 'ХОЛОДНЫЙ РАСЧЁТ',
+      desc: 'Перезарядка удара −20%',
+      apply: () => { P.attackCd = Math.max(0.12, P.attackCd * 0.8); }
+    },
+    {
+      id: 'regen',
+      name: 'ТЁМНАЯ ПЛОТЬ',
+      desc: 'Регенерация +1.5 HP/с',
+      apply: () => { P.regen += 1.5; }
+    },
+    {
+      id: 'harvest',
+      name: 'ЖАТВА',
+      desc: 'Лечение +3 HP за убийство',
+      apply: () => { P.lifesteal += 3; }
+    }
+  ];
 
-  function createShadow(type, x, y) {
-    const cfg =
-      shadowTypes[type] ||
-      shadowTypes.soldier;
+  /* ==========================================================
+     УТИЛИТЫ
+     ========================================================== */
 
-    return {
-      type,
+  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const angleTo = (a, b) => Math.atan2(b.y - a.y, b.x - a.x);
 
-      x,
-      y,
+  const setText = (el, value) => {
+    if (el && el.textContent !== value) el.textContent = value;
+  };
 
-      r: cfg.radius,
+  const setWidth = (el, percent) => {
+    if (!el) return;
+    const value = `${clamp(percent, 0, 100).toFixed(1)}%`;
+    if (el.style.width !== value) el.style.width = value;
+  };
 
-      damage:
-        cfg.damage +
-        meta.portal * 2,
+  /* ==========================================================
+     ЗВУК (WebAudio, без внешних файлов)
+     ========================================================== */
 
-      speed: cfg.speed,
+  const SOUND_KEY = 'shadow-ascendant-muted';
 
-      attackSpeed: cfg.attackSpeed,
+  let muted = false;
+  let audioCtx = null;
 
-      cd: Math.random() * 0.4,
-
-      pulse: Math.random() * Math.PI * 2
-    };
+  try {
+    muted = localStorage.getItem(SOUND_KEY) === '1';
+  } catch (error) {
+    muted = false;
   }
 
-  function summonShadow(corpse) {
-    if (S.army.length >= MAX_ARMY) {
-      fx(corpse.x, corpse.y, '#ff557d', 12);
-      return;
+  function audio() {
+    if (muted) return null;
+
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+
+      if (!AC) {
+        muted = true;
+        return null;
+      }
+
+      try {
+        audioCtx = new AC();
+      } catch (error) {
+        muted = true;
+        return null;
+      }
     }
 
-    const shadow =
-      createShadow(
-        corpse.type,
-        corpse.x,
-        corpse.y
-      );
+    if (audioCtx.state === 'suspended' && audioCtx.resume) {
+      audioCtx.resume().catch(() => {});
+    }
 
-    S.army.push(shadow);
-
-    fx(
-      corpse.x,
-      corpse.y,
-      '#8968ff',
-      24
-    );
-
-    ui();
+    return audioCtx;
   }
 
-  // =========================================================
-  // GAME START / END
-  // =========================================================
+  /* Короткий синтезированный сигнал: частота → частота за время dur. */
+  function tone(from, to, dur, type, volume, delay = 0) {
+    const ctx = audio();
+    if (!ctx) return;
 
-  function start() {
-    Object.assign(S, {
-      go: true,
-      pause: false,
-      choice: false,
+    try {
+      const start = ctx.currentTime + delay;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
 
-      kills: 0,
-      goal: 18 + meta.portal * 5,
-      wave: 0,
+      osc.type = type;
+      osc.frequency.setValueAtTime(from, start);
+      if (to !== from) {
+        osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), start + dur);
+      }
 
-      enemies: [],
-      corpses: [],
-      army: [],
-      fx: [],
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
 
-      waveTimer: 0
-    });
+      osc.connect(gain);
+      gain.connect(ctx.destination);
 
+      osc.start(start);
+      osc.stop(start + dur + 0.03);
+    } catch (error) {
+      /* звук не критичен для игры */
+    }
+  }
+
+  const sfx = {
+    swing: () => tone(560, 240, 0.11, 'triangle', 0.045),
+    hit: () => tone(190, 95, 0.08, 'square', 0.03),
+    kill: () => {
+      tone(330, 120, 0.18, 'sawtooth', 0.035);
+      tone(95, 60, 0.26, 'sine', 0.045, 0.02);
+    },
+    raise: () => tone(170, 470, 0.34, 'sine', 0.045),
+    level: () => {
+      tone(520, 780, 0.16, 'sine', 0.045);
+      tone(780, 1050, 0.24, 'sine', 0.04, 0.13);
+    },
+    hurt: () => tone(150, 70, 0.13, 'square', 0.04),
+    deny: () => tone(200, 130, 0.12, 'square', 0.03),
+    boss: () => {
+      tone(72, 46, 0.9, 'sawtooth', 0.06);
+      tone(140, 92, 0.7, 'triangle', 0.035, 0.05);
+    },
+    win: () => [523, 659, 784].forEach((f, i) => tone(f, f * 1.26, 0.3, 'sine', 0.045, i * 0.14)),
+    lose: () => [300, 190].forEach((f, i) => tone(f, f * 0.5, 0.5, 'sine', 0.045, i * 0.16))
+  };
+
+  function toggleSound() {
+    muted = !muted;
+
+    try {
+      localStorage.setItem(SOUND_KEY, muted ? '1' : '0');
+    } catch (error) {
+      /* приватный режим — просто переключаем без сохранения */
+    }
+
+    const button = $('sound');
+    if (button) {
+      button.textContent = muted ? '🔇' : '🔊';
+      button.title = muted ? 'Включить звук' : 'Выключить звук';
+    }
+
+    if (!muted) sfx.level();
+
+    return muted;
+  }
+
+  /* ==========================================================
+     СОХРАНЕНИЕ ПРОГРЕССА
+     ========================================================== */
+
+  function defaultMeta() {
+    return { portal: 1, shadows: [], clears: 0, kills: 0, best: 1 };
+  }
+
+  function loadMeta() {
+    const meta = defaultMeta();
+
+    let raw = null;
+    try {
+      raw = localStorage.getItem(SAVE_KEY);
+    } catch (error) {
+      return meta; // приватный режим — играем без сохранений
+    }
+
+    if (!raw) return meta;
+
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch (error) {
+      return meta; // повреждённое сохранение не должно ломать игру
+    }
+
+    if (!data || typeof data !== 'object') return meta;
+
+    const portal = Math.floor(Number(data.portal));
+    if (Number.isFinite(portal) && portal > 0) meta.portal = portal;
+
+    const list = [];
+    if (Array.isArray(data.shadows)) {
+      for (const item of data.shadows) {
+        if (typeof item === 'string') list.push(item);
+      }
+    }
+
+    // Старый формат хранил только число теней.
+    if (list.length === 0 && Number(data.vault) > 0) {
+      const count = clamp(Math.floor(Number(data.vault)), 0, VAULT_LIMIT);
+      for (let i = 0; i < count; i++) list.push('soldier');
+    }
+
+    meta.shadows = list.slice(0, VAULT_LIMIT);
+
+    meta.clears = Math.max(0, Math.floor(Number(data.clears)) || 0);
+    meta.kills = Math.max(0, Math.floor(Number(data.kills)) || 0);
+    meta.best = Math.max(meta.portal, Math.floor(Number(data.best)) || 1);
+
+    return meta;
+  }
+
+  function save() {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify({
+        v: 2,
+        portal: meta.portal,
+        shadows: meta.shadows,
+        clears: meta.clears,
+        kills: meta.kills,
+        best: meta.best
+      }));
+    } catch (error) {
+      /* переполнение или приватный режим — молча продолжаем */
+    }
+  }
+
+  const meta = loadMeta();
+
+  const rank = () => RANKS[clamp(Math.floor((meta.portal - 1) / 2), 0, RANKS.length - 1)];
+  const portalName = () => PORTAL_NAMES[(meta.portal - 1) % PORTAL_NAMES.length];
+
+  /* ==========================================================
+     СОСТОЯНИЕ
+     ========================================================== */
+
+  const S = {
+    go: false,
+    pause: false,
+    choice: false,
+
+    phase: 'idle',      // idle | hunt | boss | over
+    kills: 0,
+    goal: 0,
+    wave: 0,
+    time: 0,
+
+    enemies: [],
+    corpses: [],
+    army: [],
+    fx: [],
+    spawnQueue: [],
+    deployed: [],       // типы теней, выведенных из хранилища
+
+    boss: null,
+    raiseTarget: null,
+    announce: null,
+    waveGap: WAVE_GAP,
+    pending: 0,
+    options: [],
+
+    last: 0
+  };
+
+  const P = {};
+
+  function resetPlayer() {
     Object.assign(P, {
       x: W / 2,
       y: H / 2,
+      r: 17,
+      face: 0,
 
       hp: 100,
-      max: 100,
+      maxHp: 100,
+      hurt: 0,
 
       lvl: 1,
       xp: 0,
@@ -453,555 +469,837 @@
 
       dmg: 25,
       spd: 245,
-
+      attackRange: 98,
+      attackArc: 1.35,
+      attackCd: 0.35,
       cd: 0,
       flash: 0,
-      face: 0
+
+      regen: 0,
+      lifesteal: 0,
+      armyMax: BASE_ARMY_MAX,
+      armyDmg: 1
     });
+  }
 
-    // Возвращаем часть постоянной армии.
-    const initialArmy =
-      Math.min(
-        meta.shadows.length,
-        MAX_ARMY
-      );
+  function resetRun() {
+    Object.assign(S, {
+      go: true,
+      pause: false,
+      choice: false,
 
-    for (let i = 0; i < initialArmy; i++) {
-      const type =
-        typeof meta.shadows[i] === 'string'
-          ? meta.shadows[i]
-          : 'soldier';
+      phase: 'hunt',
+      kills: 0,
+      goal: 24 + meta.portal * 7,
+      wave: 0,
+      time: 0,
 
-      S.army.push(
-        createShadow(
-          type,
-          P.x - 35 - i * 16,
-          P.y
-        )
-      );
+      enemies: [],
+      corpses: [],
+      army: [],
+      fx: [],
+      spawnQueue: [],
+      deployed: [],
+
+      boss: null,
+      raiseTarget: null,
+      announce: null,
+      waveGap: WAVE_GAP,
+      pending: 0,
+      options: []
+    });
+  }
+
+  /* ==========================================================
+     ОБЪЯВЛЕНИЯ И ЭФФЕКТЫ
+     ========================================================== */
+
+  function announce(title, text = '') {
+    S.announce = { title, text, t: 2.6 };
+  }
+
+  function fx(x, y, color, amount = 8) {
+    for (let i = 0; i < amount; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const velocity = rand(35, 145);
+
+      S.fx.push({
+        x,
+        y,
+        vx: Math.cos(angle) * velocity,
+        vy: Math.sin(angle) * velocity,
+        color,
+        t: 0.5
+      });
     }
+
+    if (S.fx.length > MAX_FX) S.fx.splice(0, S.fx.length - MAX_FX);
+  }
+
+  /* ==========================================================
+     ВРАГИ
+     ========================================================== */
+
+  function randomEnemyType() {
+    const r = Math.random();
+
+    if (meta.portal >= 3 && r < 0.16) return 'caster';
+    if (meta.portal >= 2 && r < 0.35) return 'brute';
+    if (r < 0.55) return 'runner';
+
+    return 'soldier';
+  }
+
+  /* Чем больше теневая армия охотника, тем сильнее укрепляется
+     Хранитель: бой с боссом остаётся испытанием и без армии. */
+  function bossConfig() {
+    const p = meta.portal;
+    const armyScale = 1 + 0.15 * S.army.length;
+
+    return {
+      name: 'ХРАНИТЕЛЬ ВРАТ',
+      color: '#e98d39',
+      core: '#4a2614',
+      hp: (560 + p * 130) * armyScale,
+      speed: 56 + p * 3,
+      radius: 28,
+      damage: 12 + p * 1.4,
+      xp: 60
+    };
+  }
+
+  /* Точка появления: подальше от игрока и внутри арены. */
+  function spawnPoint(radius) {
+    let best = null;
+
+    for (let i = 0; i < 16; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const length = rand(0.34, 0.55) * Math.min(W, H);
+
+      const x = clamp(P.x + Math.cos(angle) * length, radius + 6, W - radius - 6);
+      const y = clamp(P.y + Math.sin(angle) * length, radius + 6, H - radius - 6);
+      const d = Math.hypot(x - P.x, y - P.y);
+
+      if (!best || d > best.d) best = { x, y, d };
+    }
+
+    // Если арена тесная — уходим в самый дальний угол.
+    if (best.d < 130) {
+      best.x = clamp(P.x < W / 2 ? W - radius - 8 : radius + 8, radius, W - radius);
+      best.y = clamp(P.y < H / 2 ? H - radius - 8 : radius + 8, radius, H - radius);
+    }
+
+    return best;
+  }
+
+  function spawn(type) {
+    const key = type === 'boss' ? 'boss' : (ENEMY_TYPES[type] ? type : randomEnemyType());
+    const isBoss = key === 'boss';
+    const cfg = isBoss ? bossConfig() : ENEMY_TYPES[key];
+
+    const step = Math.max(0, meta.portal - 1);
+    const hpScale = isBoss ? 1 : 1 + step * 0.12;
+    const damageScale = isBoss ? 1 : 1 + step * 0.05;
+    const speedScale = isBoss ? 1 : 1 + step * 0.03;
+
+    const point = spawnPoint(cfg.radius);
+    const hp = cfg.hp * hpScale;
+
+    const enemy = {
+      type: key,
+      boss: isBoss,
+
+      name: cfg.name,
+      color: cfg.color,
+      core: cfg.core,
+
+      x: point.x,
+      y: point.y,
+      r: cfg.radius,
+
+      hp,
+      max: hp,
+
+      speed: cfg.speed * speedScale,
+      damage: cfg.damage * damageScale,
+      xp: cfg.xp,
+
+      hit: 0,
+      summon: 6
+    };
+
+    S.enemies.push(enemy);
+
+    if (isBoss) S.boss = enemy;
+
+    fx(enemy.x, enemy.y, isBoss ? '#ffb05e' : '#ef4d8d', isBoss ? 26 : 8);
+
+    return enemy;
+  }
+
+  function queueWave() {
+    S.wave++;
+    S.waveGap = WAVE_GAP;
+
+    const amount = 4 + S.wave * 2 + Math.floor(meta.portal * 0.6);
+
+    for (let i = 0; i < amount; i++) {
+      S.spawnQueue.push({ at: i * SPAWN_STEP, type: null });
+    }
+
+    if (S.wave === 1) {
+      announce(`РАНГ ${rank()} · ${portalName()}`, `Цель: ${S.goal} существ, затем Хранитель врат`);
+    } else {
+      announce(`ВОЛНА ${S.wave}`, `Появилось врагов: ${amount}`);
+    }
+  }
+
+  function updateSpawns(dt) {
+    if (S.spawnQueue.length === 0) return;
+
+    let ready = null;
+
+    for (const item of S.spawnQueue) {
+      item.at -= dt;
+      if (item.at <= 0) (ready ||= []).push(item);
+    }
+
+    if (!ready) return;
+
+    S.spawnQueue = S.spawnQueue.filter((item) => item.at > 0);
+
+    for (const item of ready) spawn(item.type);
+  }
+
+  function startBossPhase() {
+    S.phase = 'boss';
+
+    // Перед решающим боем охотник переводит дыхание.
+    const heal = P.maxHp * BOSS_HEAL;
+    P.hp = Math.min(P.maxHp, P.hp + heal);
+
+    const boss = spawn('boss');
+
+    announce('ХРАНИТЕЛЬ ВРАТ', `Убей босса, чтобы закрыть портал · +${Math.round(heal)} HP`);
+    fx(boss.x, boss.y, '#ffb05e', 30);
+    fx(P.x, P.y, '#7dffb0', 18);
+
+    sfx.boss();
+  }
+
+  function bossUpdate(boss, dt) {
+    boss.summon -= dt;
+
+    if (boss.summon > 0) return;
+
+    boss.summon = 5;
+
+    if (S.enemies.length >= BOSS_MINIONS) return;
+
+    for (let i = 0; i < 2; i++) {
+      const minion = spawn(randomEnemyType());
+
+      minion.x = clamp(boss.x + rand(-70, 70), minion.r + 6, W - minion.r - 6);
+      minion.y = clamp(boss.y + rand(-70, 70), minion.r + 6, H - minion.r - 6);
+    }
+
+    fx(boss.x, boss.y, '#ffb05e', 14);
+  }
+
+  /* ==========================================================
+     ТЕНИ
+     ========================================================== */
+
+  function createShadow(type, x, y) {
+    const cfg = SHADOW_TYPES[type] || SHADOW_TYPES.soldier;
+
+    return {
+      type: SHADOW_TYPES[type] ? type : 'soldier',
+
+      x,
+      y,
+      r: cfg.radius,
+
+      damage: cfg.damage + meta.portal * 2,
+      speed: cfg.speed,
+      attackSpeed: cfg.attackSpeed,
+
+      cd: Math.random() * 0.4,
+      pulse: Math.random() * Math.PI * 2
+    };
+  }
+
+  function summonShadow(corpse) {
+    if (S.army.length >= P.armyMax) return false;
+
+    S.army.push(createShadow(corpse.type, corpse.x, corpse.y));
+    fx(corpse.x, corpse.y, '#8968ff', 24);
+    ui();
+
+    return true;
+  }
+
+  /* Вывести часть хранилища в бой. */
+  function deployArmy() {
+    const count = Math.min(P.armyMax, meta.shadows.length);
+
+    for (let i = 0; i < count; i++) {
+      const type = meta.shadows[i];
+      S.deployed.push(type);
+
+      S.army.push(createShadow(
+        type,
+        P.x - 35 - i * 16,
+        P.y + (i % 2 ? 18 : -18)
+      ));
+    }
+
+    meta.shadows.splice(0, count);
+  }
+
+  /* ==========================================================
+     ИНТЕРФЕЙС
+     ========================================================== */
+
+  function ui() {
+    setText($('level'), `УР. ${P.lvl}`);
+    setText($('hptext'), `${Math.max(0, Math.ceil(P.hp))} / ${P.maxHp}`);
+    setWidth($('hp'), (P.hp / P.maxHp) * 100);
+    setWidth($('xp'), (P.xp / P.next) * 100);
+
+    setText($('shadows'), String(S.army.length));
+    setText($('vault'), String(meta.shadows.length));
+
+    const goal = Math.max(1, S.goal);
+
+    setText(
+      $('objective'),
+      S.phase === 'boss'
+        ? `ПОРТАЛ ${meta.portal} · УБЕЙ ХРАНИТЕЛЯ ВРАТ`
+        : `ПОРТАЛ ${meta.portal} · ${portalName()} — ${Math.min(S.kills, goal)} / ${goal}`
+    );
+    setWidth($('objbar'), (S.kills / goal) * 100);
+
+    const boss = S.boss && S.enemies.includes(S.boss) ? S.boss : null;
+
+    $('bossbar').classList.toggle('hidden', !boss);
+    if (boss) {
+      setText($('bossname'), boss.name);
+      setWidth($('bosshp'), (boss.hp / boss.max) * 100);
+    }
+
+    const a = S.announce;
+    $('banner').classList.toggle('hidden', !a);
+    if (a) {
+      setText($('bannertitle'), a.title);
+      setText($('bannertext'), a.text || '');
+    }
+  }
+
+  function updateStats() {
+    setText($('statvault'), String(meta.shadows.length));
+    setText($('statclears'), String(meta.clears));
+    setText($('statkills'), String(meta.kills));
+
+    $('reset').classList.toggle(
+      'hidden',
+      meta.clears === 0 && meta.kills === 0 && meta.portal === 1 && meta.shadows.length === 0
+    );
+  }
+
+  /* ==========================================================
+     СТАРТ / ФИНАЛ ОХОТЫ
+     ========================================================== */
+
+  function start() {
+    if (S.go) return; // защита от двойного запуска
+
+    resetPlayer();
+    resetRun();
 
     $('start').classList.add('hidden');
     $('end').classList.add('hidden');
-
     $('upgrade').classList.add('hidden');
     $('paused').classList.add('hidden');
+    $('pause').textContent = 'Ⅱ';
 
-    wave();
+    deployArmy();
+    queueWave();
     ui();
   }
 
   function finish(win) {
+    const clearedRank = rank();
+
     S.go = false;
+    S.pause = false;
+    S.choice = false;
+    S.phase = 'over';
+    S.boss = null;
+    S.announce = null;
+    S.spawnQueue.length = 0;
+
+    $('upgrade').classList.add('hidden');
+    $('paused').classList.add('hidden');
+    $('pause').textContent = 'Ⅱ';
 
     if (win) {
-      // Победившая армия возвращается в хранилище.
-      for (const shadow of S.army) {
-        meta.shadows.push(shadow.type);
+      // Тени, пережившие охоту, возвращаются в хранилище.
+      const survivors = S.army.map((shadow) => shadow.type);
+      meta.shadows.push(...survivors);
+      if (meta.shadows.length > VAULT_LIMIT) {
+        meta.shadows.splice(0, meta.shadows.length - VAULT_LIMIT);
       }
 
       meta.portal++;
-
-      // Сохраняем фактическую армию.
-      meta.vault = meta.shadows.length;
-
-      save();
+      meta.clears++;
+      meta.best = Math.max(meta.best, meta.portal);
     }
 
-    $('endrank').textContent =
-      win
-        ? `ПОРТАЛ РАНГА ${rank()}`
-        : 'ОХОТА ПРЕРВАНА';
+    meta.kills += S.kills;
+    save();
 
-    $('endtitle').textContent =
-      win
-        ? 'ВРАТА ОЧИЩЕНЫ'
-        : 'ОХОТА ПРЕРВАНА';
+    const rows = win
+      ? [
+        ['Убито существ', S.kills],
+        ['Уровень охотника', P.lvl],
+        ['Тени вернулись', S.army.length],
+        ['В хранилище', meta.shadows.length],
+        ['Дальше', `ВРАТА РАНГА ${rank()}`]
+      ]
+      : [
+        ['Убито существ', S.kills],
+        ['Уровень охотника', P.lvl],
+        ['Тени потеряны', S.deployed.length],
+        ['В хранилище', meta.shadows.length],
+        ['Портал', `${meta.portal} · ${portalName()}`]
+      ];
 
-    $('endtext').textContent =
-      win
-        ? `Тени вернулись в хранилище: +${S.army.length}. Следующий портал будет опаснее.`
-        : `Достигнут ${P.lvl} уровень. Сохранено теней: ${meta.shadows.length}.`;
+    $('endrank').textContent = win ? `ПОРТАЛ РАНГА ${clearedRank} ЗАКРЫТ` : 'ОХОТА ПРЕРВАНА';
+    $('endtitle').textContent = win ? 'ВРАТА ОЧИЩЕНЫ' : 'ТЫ ПАЛ';
+    $('endtext').textContent = win
+      ? `Тени вернулись в хранилище: +${S.army.length}. Следующий портал будет опаснее.`
+      : `Тени, вышедшие с тобой, растворились во тьме. В хранилище осталось: ${meta.shadows.length}.`;
+    $('again').textContent = win ? 'СЛЕДУЮЩИЙ ПОРТАЛ' : 'ПОВТОРИТЬ ПОРТАЛ';
 
-    $('again').textContent =
-      win
-        ? 'СЛЕДУЮЩИЙ ПОРТАЛ'
-        : 'ПОВТОРИТЬ ПОРТАЛ';
+    $('endsummary').innerHTML = rows
+      .map(([key, value]) => `<li><span>${key}</span><b>${value}</b></li>`)
+      .join('');
 
     $('end').classList.remove('hidden');
 
+    // Павшая армия растворяется во тьме.
+    if (!win) S.army.length = 0;
+
+    if (win) sfx.win();
+    else sfx.lose();
+
+    updateStats();
     ui();
   }
 
-  // =========================================================
-  // PAUSE
-  // =========================================================
+  /* ==========================================================
+     ПАУЗА
+     ========================================================== */
 
   function pause(on = !S.pause) {
-    if (!S.go || S.choice) {
-      return;
-    }
+    if (!S.go || S.choice) return;
 
     S.pause = on;
 
-    $('paused')
-      .classList
-      .toggle('hidden', !on);
-
-    $('pause').textContent =
-      on ? '▶' : 'Ⅱ';
+    $('paused').classList.toggle('hidden', !on);
+    $('pause').textContent = on ? '▶' : 'Ⅱ';
   }
 
-  // =========================================================
-  // ATTACK
-  // =========================================================
+  /* ==========================================================
+     УДАР И ПОДЪЁМ
+     ========================================================== */
 
   function attack() {
-    if (
-      !S.go ||
-      S.pause ||
-      S.choice ||
-      P.cd > 0
-    ) {
-      return;
-    }
+    if (!S.go || S.pause || S.choice || P.cd > 0) return;
 
-    P.cd = 0.35;
+    P.cd = P.attackCd;
     P.flash = 0.16;
 
+    let hit = false;
+
     for (const enemy of S.enemies) {
-      const angle =
-        Math.atan2(
-          enemy.y - P.y,
-          enemy.x - P.x
-        );
+      if (enemy.hp <= 0) continue;
 
-      const difference =
-        Math.abs(
-          Math.atan2(
-            Math.sin(angle - P.face),
-            Math.cos(angle - P.face)
-          )
-        );
+      const angle = angleTo(P, enemy);
+      const difference = Math.abs(
+        Math.atan2(Math.sin(angle - P.face), Math.cos(angle - P.face))
+      );
 
-      if (
-        dist(P, enemy) < P.attackRange &&
-        difference < 1.35
-      ) {
+      if (dist(P, enemy) < P.attackRange + enemy.r && difference < P.attackArc) {
         enemy.hp -= P.dmg;
         enemy.hit = 0.15;
 
-        fx(
-          enemy.x,
-          enemy.y,
-          '#decfff',
-          5
-        );
+        hit = true;
+
+        fx(enemy.x, enemy.y, '#decfff', 5);
       }
     }
+
+    sfx.swing();
+    if (hit) sfx.hit();
   }
 
-  // =========================================================
-  // RAISE
-  // =========================================================
-
   function raise() {
-    if (
-      !S.go ||
-      S.pause ||
-      S.choice
-    ) {
-      return;
-    }
+    if (!S.go || S.pause || S.choice) return;
 
-    if (S.army.length >= MAX_ARMY) {
+    if (S.army.length >= P.armyMax) {
       fx(P.x, P.y, '#ff557d', 12);
+      announce('АРМИЯ ПОЛНА', `Максимум теней: ${P.armyMax}`);
+      sfx.deny();
       return;
     }
 
-    const corpse =
-      S.corpses
-        .filter(c => dist(P, c) < 92)
-        .sort((a, b) =>
-          dist(P, a) - dist(P, b)
-        )[0];
+    const corpse = nearestCorpse();
 
     if (!corpse) {
+      fx(P.x, P.y, '#5a6488', 6);
+      sfx.deny();
       return;
     }
 
-    S.corpses.splice(
-      S.corpses.indexOf(corpse),
-      1
-    );
+    sfx.raise();
 
+    S.corpses.splice(S.corpses.indexOf(corpse), 1);
     summonShadow(corpse);
   }
 
-  // =========================================================
-  // UPGRADES
-  // =========================================================
+  function nearestCorpse() {
+    let best = null;
 
-  const upgrades = [
-    [
-      'КЛИНОК ТЕНИ',
-      'Урон +14',
-      () => P.dmg += 14
-    ],
-
-    [
-      'ЖИВУЧЕСТЬ',
-      'Макс. HP +35',
-      () => {
-        P.max += 35;
-        P.hp = P.max;
-      }
-    ],
-
-    [
-      'ШАГ СКВОЗЬ ТЬМУ',
-      'Скорость +45',
-      () => P.spd += 45
-    ],
-
-    [
-      'РАЗРЫВ',
-      'Дальность атаки +18',
-      () => P.attackRange += 18
-    ],
-
-    [
-      'КОМАНДИР ТЕНЕЙ',
-      'Максимум армии +1',
-      () => {}
-    ]
-  ];
-
-  function levelUp() {
-    S.choice = true;
-
-    $('upgrade')
-      .classList
-      .remove('hidden');
-
-    $('choices').innerHTML = '';
-
-    const available =
-      [...upgrades]
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 3);
-
-    for (const upgrade of available) {
-      const button =
-        document.createElement('button');
-
-      button.className = 'choice';
-
-      button.innerHTML =
-        `<b>${upgrade[0]}</b>
-         <span>${upgrade[1]}</span>`;
-
-      button.onclick = () => {
-        upgrade[2]();
-
-        if (upgrade[0] === 'КОМАНДИР ТЕНЕЙ') {
-          // Ограничение растёт отдельно.
-          // Храним его через свойство игры.
-          window.shadowArmyBonus =
-            (window.shadowArmyBonus || 0) + 1;
-        }
-
-        S.choice = false;
-
-        $('upgrade')
-          .classList
-          .add('hidden');
-
-        ui();
-      };
-
-      $('choices').append(button);
+    for (const corpse of S.corpses) {
+      const d = dist(P, corpse);
+      if (d > RAISE_RANGE) continue;
+      if (!best || d < best.d) best = { corpse, d };
     }
+
+    return best ? best.corpse : null;
+  }
+
+  /* ==========================================================
+     УРОВНИ И УСИЛЕНИЯ
+     ========================================================== */
+
+  function shuffle(list) {
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+    return list;
+  }
+
+  function pickUpgrades(count) {
+    return shuffle([...UPGRADES]).slice(0, count);
+  }
+
+  function offerUpgrade() {
+    // Экран уже открыт: уровни подождут в очереди до следующего выбора.
+    if (S.choice) return;
+
+    if (!S.go || S.pending <= 0) {
+      S.pending = 0;
+      S.options = [];
+      S.choice = false;
+      $('upgrade').classList.add('hidden');
+      return;
+    }
+
+    S.pending--;
+    S.choice = true;
+    S.options = pickUpgrades(3);
+
+    setText($('upgradesub'), `Выбери усиление · уровень ${P.lvl}`);
+
+    const box = $('choices');
+    box.innerHTML = '';
+
+    S.options.forEach((upgrade, index) => {
+      const button = document.createElement('button');
+
+      button.type = 'button';
+      button.className = 'choice';
+      button.innerHTML = `<b>${upgrade.name}</b><span>${upgrade.desc}</span>`;
+      button.onclick = () => takeUpgrade(index);
+
+      box.appendChild(button);
+    });
+
+    $('upgrade').classList.remove('hidden');
+  }
+
+  function takeUpgrade(index) {
+    if (!S.choice) return;
+
+    const upgrade = S.options[index];
+    if (!upgrade) return;
+
+    upgrade.apply();
+
+    // Сначала закрываем экран, затем показываем следующий
+    // из очереди накопленных уровней.
+    S.choice = false;
+    S.options = [];
+
+    ui();
+    offerUpgrade();
   }
 
   function gainXP(amount) {
     P.xp += amount;
 
+    let levels = 0;
+
     while (P.xp >= P.next) {
       P.xp -= P.next;
-
       P.lvl++;
+      levels++;
 
-      P.next =
-        Math.round(P.next * 1.35);
+      P.next = Math.round(P.next * XP_GROWTH);
+      P.hp = Math.min(P.maxHp, P.hp + P.maxHp * LEVEL_HEAL);
 
-      levelUp();
+      fx(P.x, P.y, '#b69fff', 18);
+      sfx.level();
+    }
 
-      break;
+    // Уровни складываются в очередь: несколько убийств за один кадр
+    // не должны «терять» усиления.
+    if (levels > 0) {
+      S.pending += levels;
+      offerUpgrade();
     }
 
     ui();
   }
 
-  // =========================================================
-  // ENEMY DEATH
-  // =========================================================
+  /* ==========================================================
+     СМЕРТЬ ВРАГА
+     ========================================================== */
 
   function killEnemy(enemy) {
-    const index =
-      S.enemies.indexOf(enemy);
+    const index = S.enemies.indexOf(enemy);
+    if (index === -1) return;
 
-    if (index !== -1) {
-      S.enemies.splice(index, 1);
-    }
+    S.enemies.splice(index, 1);
+
+    if (enemy === S.boss) S.boss = null;
 
     S.corpses.push({
       x: enemy.x,
       y: enemy.y,
-
-      r: enemy.r,
-
-      t: 9,
-
+      r: Math.max(9, enemy.r * 0.82),
+      t: CORPSE_TTL,
       type: enemy.type
     });
 
-    S.kills +=
-      enemy.boss ? 4 : 1;
+    S.kills += enemy.boss ? 4 : 1;
 
-    gainXP(
-      enemy.boss
-        ? 55
-        : enemy.xp
-    );
-
-    fx(
-      enemy.x,
-      enemy.y,
-      enemy.boss
-        ? '#ff9d45'
-        : '#ef4d8d',
-      enemy.boss ? 24 : 12
-    );
-  }
-
-  // =========================================================
-  // GAME TICK
-  // =========================================================
-
-  function tick(dt) {
-    if (
-      !S.go ||
-      S.pause ||
-      S.choice
-    ) {
-      return;
+    if (P.lifesteal > 0) {
+      P.hp = Math.min(P.maxHp, P.hp + P.lifesteal);
     }
 
-    P.cd -= dt;
-    P.flash -= dt;
+    gainXP(enemy.boss ? 55 : enemy.xp);
 
-    // -------------------------
-    // PLAYER MOVEMENT
-    // -------------------------
+    fx(enemy.x, enemy.y, enemy.boss ? '#ff9d45' : '#ef4d8d', enemy.boss ? 26 : 12);
 
-    let dx =
-      (K.d || K.arrowright ? 1 : 0) -
-      (K.a || K.arrowleft ? 1 : 0);
+    sfx.kill();
+  }
 
-    let dy =
-      (K.s || K.arrowdown ? 1 : 0) -
-      (K.w || K.arrowup ? 1 : 0);
+  /* ==========================================================
+     ФИЗИКА ТОЛПЫ
+     ========================================================== */
 
-    if (stick) {
+  function separate(list) {
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let d = Math.hypot(dx, dy);
+
+        const min = a.r + b.r;
+        if (d >= min) continue;
+
+        if (d < 0.01) {
+          dx = rand(-1, 1);
+          dy = rand(-1, 1);
+          d = Math.hypot(dx, dy) || 1;
+        }
+
+        const overlap = min - d;
+        const nx = dx / d;
+        const ny = dy / d;
+
+        const share = a.r + b.r;
+        const pushA = overlap * (b.r / share);
+        const pushB = overlap * (a.r / share);
+
+        a.x -= nx * pushA;
+        a.y -= ny * pushA;
+        b.x += nx * pushB;
+        b.y += ny * pushB;
+      }
+    }
+
+    for (const item of list) {
+      item.x = clamp(item.x, item.r, Math.max(item.r, W - item.r));
+      item.y = clamp(item.y, item.r, Math.max(item.r, H - item.r));
+    }
+  }
+
+  function moveToward(item, target, step) {
+    const angle = angleTo(item, target);
+    item.x += Math.cos(angle) * step;
+    item.y += Math.sin(angle) * step;
+  }
+
+  function nearestEnemy(from) {
+    let best = null;
+
+    for (const enemy of S.enemies) {
+      if (enemy.hp <= 0) continue;
+
+      const d = dist(from, enemy);
+      if (!best || d < best.d) best = { enemy, d };
+    }
+
+    return best ? best.enemy : null;
+  }
+
+  /* ==========================================================
+     ШАГ ИГРЫ
+     ========================================================== */
+
+  function tick(dt) {
+    if (!S.go || S.pause || S.choice) return;
+
+    S.time += dt;
+
+    P.cd = Math.max(0, P.cd - dt);
+    P.flash = Math.max(0, P.flash - dt);
+    P.hurt = Math.max(0, P.hurt - dt * 1.2);
+
+    if (P.regen > 0) P.hp = Math.min(P.maxHp, P.hp + P.regen * dt);
+
+    if (S.announce) {
+      S.announce.t -= dt;
+      if (S.announce.t <= 0) S.announce = null;
+    }
+
+    /* ---------------- движение игрока ---------------- */
+
+    let dx = (K.d || K.arrowright ? 1 : 0) - (K.a || K.arrowleft ? 1 : 0);
+    let dy = (K.s || K.arrowdown ? 1 : 0) - (K.w || K.arrowup ? 1 : 0);
+
+    if (stick && (stick.x || stick.y)) {
       dx = stick.x;
       dy = stick.y;
     }
 
     if (dx || dy) {
-      const length =
-        Math.hypot(dx, dy);
+      const length = Math.hypot(dx, dy) || 1;
 
-      P.x = clamp(
-        P.x +
-          dx / length *
-          P.spd *
-          dt,
-        22,
-        W - 22
-      );
+      P.x = clamp(P.x + (dx / length) * P.spd * dt, P.r + 4, W - P.r - 4);
+      P.y = clamp(P.y + (dy / length) * P.spd * dt, P.r + 4, H - P.r - 4);
 
-      P.y = clamp(
-        P.y +
-          dy / length *
-          P.spd *
-          dt,
-        22,
-        H - 22
-      );
-
-      P.face =
-        Math.atan2(dy, dx);
+      P.face = Math.atan2(dy, dx);
     }
 
-    // -------------------------
-    // ENEMIES
-    // -------------------------
+    /* ---------------- появление врагов ---------------- */
+
+    updateSpawns(dt);
+
+    /* ---------------- враги ---------------- */
 
     for (const enemy of S.enemies) {
-      const angle =
-        Math.atan2(
-          P.y - enemy.y,
-          P.x - enemy.x
-        );
+      enemy.hit = Math.max(0, enemy.hit - dt);
 
-      const distance =
-        dist(P, enemy);
+      // gap — просвет между кругами. Порог APRON нужен из-за
+      // плавающей точки: без него юнит «зависает» на самой границе.
+      const gap = dist(enemy, P) - (enemy.r + P.r + CONTACT_SLACK);
 
-      if (distance > 30) {
-        enemy.x +=
-          Math.cos(angle) *
-          enemy.speed *
-          dt;
-
-        enemy.y +=
-          Math.sin(angle) *
-          enemy.speed *
-          dt;
+      if (gap > APRON) {
+        moveToward(enemy, P, Math.min(enemy.speed * dt, gap));
       } else {
-        P.hp -=
-          enemy.damage * dt;
+        damagePlayer(enemy.damage * dt);
       }
 
-      enemy.hit -= dt;
+      if (enemy.boss) bossUpdate(enemy, dt);
     }
 
-    // -------------------------
-    // SHADOW ARMY
-    // -------------------------
+    separate(S.enemies);
+
+    /* ---------------- теневая армия ---------------- */
 
     for (const shadow of S.army) {
       shadow.pulse += dt;
+      shadow.cd -= dt;
 
-      const targets =
-        S.enemies
-          .filter(e => !e.dead);
-
-      const target =
-        targets
-          .sort((a, b) =>
-            dist(shadow, a) -
-            dist(shadow, b)
-          )[0];
+      const target = nearestEnemy(shadow);
 
       if (!target) {
-        // Возвращаем тень к игроку.
-        const d = dist(shadow, P);
-
-        if (d > 80) {
-          const angle =
-            Math.atan2(
-              P.y - shadow.y,
-              P.x - shadow.x
-            );
-
-          shadow.x +=
-            Math.cos(angle) *
-            shadow.speed *
-            dt;
-
-          shadow.y +=
-            Math.sin(angle) *
-            shadow.speed *
-            dt;
-        }
-
+        const home = dist(shadow, P) - 80;
+        if (home > APRON) moveToward(shadow, P, Math.min(shadow.speed * dt, home));
         continue;
       }
 
-      const distance =
-        dist(shadow, target);
+      const gap = dist(shadow, target) - (shadow.r + target.r + REACH_SLACK);
 
-      const angle =
-        Math.atan2(
-          target.y - shadow.y,
-          target.x - shadow.x
-        );
-
-      if (distance > 30) {
-        shadow.x +=
-          Math.cos(angle) *
-          shadow.speed *
-          dt;
-
-        shadow.y +=
-          Math.sin(angle) *
-          shadow.speed *
-          dt;
+      if (gap > APRON) {
+        moveToward(shadow, target, Math.min(shadow.speed * dt, gap));
       } else if (shadow.cd <= 0) {
-        target.hp -= shadow.damage;
+        target.hp -= shadow.damage * P.armyDmg;
+        target.hit = 0.12;
+        shadow.cd = shadow.attackSpeed;
 
-        shadow.cd =
-          shadow.attackSpeed;
-
-        fx(
-          target.x,
-          target.y,
-          shadowTypes[shadow.type]?.color ||
-            '#785cff',
-          3
-        );
+        fx(target.x, target.y, SHADOW_TYPES[shadow.type].color, 3);
       }
-
-      shadow.cd -= dt;
     }
 
-    // -------------------------
-    // DEAD ENEMIES
-    // -------------------------
+    separate(S.army);
 
-    const dead =
-      S.enemies.filter(e => e.hp <= 0);
+    // Тени не должны толкать игрока и наоборот.
+    for (const shadow of S.army) {
+      const d = dist(shadow, P);
+      const min = shadow.r + P.r;
 
-    for (const enemy of dead) {
-      killEnemy(enemy);
+      if (d < min && d > 0.01) {
+        const angle = angleTo(P, shadow);
+        shadow.x = P.x + Math.cos(angle) * min;
+        shadow.y = P.y + Math.sin(angle) * min;
+      }
     }
 
-    // -------------------------
-    // CORPSES
-    // -------------------------
+    /* ---------------- смерть врагов ---------------- */
 
-    for (const corpse of S.corpses) {
-      corpse.t -= dt;
+    for (let i = S.enemies.length - 1; i >= 0; i--) {
+      const enemy = S.enemies[i];
+      if (enemy.hp <= 0) killEnemy(enemy);
     }
 
-    S.corpses =
-      S.corpses.filter(c =>
-        c.t > 0
-      );
+    /* ---------------- трупы, частицы ---------------- */
 
-    // -------------------------
-    // PARTICLES
-    // -------------------------
+    for (const corpse of S.corpses) corpse.t -= dt;
+    S.corpses = S.corpses.filter((corpse) => corpse.t > 0);
+
+    S.raiseTarget = nearestCorpse();
 
     for (const particle of S.fx) {
-      particle.x +=
-        particle.vx * dt;
-
-      particle.y +=
-        particle.vy * dt;
-
+      particle.x += particle.vx * dt;
+      particle.y += particle.vy * dt;
       particle.t -= dt;
     }
 
-    S.fx =
-      S.fx.filter(p =>
-        p.t > 0
-      );
+    S.fx = S.fx.filter((particle) => particle.t > 0);
 
-    // -------------------------
-    // DEFEAT
-    // -------------------------
+    /* ---------------- поражение ---------------- */
 
     if (P.hp <= 0) {
       P.hp = 0;
@@ -1009,101 +1307,77 @@
       return;
     }
 
-    // -------------------------
-    // PORTAL OBJECTIVE
-    // -------------------------
+    /* ---------------- цель портала ---------------- */
 
-    if (S.kills >= S.goal) {
-      const bossAlive =
-        S.enemies.some(e => e.boss);
+    if (S.phase === 'hunt') {
+      const clear = S.enemies.length === 0 && S.spawnQueue.length === 0;
 
-      if (!bossAlive) {
-        spawn(
-          'brute',
-          true
-        );
-      } else if (
-        S.enemies.length === 0
-      ) {
-        finish(true);
-        return;
+      if (clear) {
+        if (S.kills >= S.goal) {
+          startBossPhase();
+        } else {
+          S.waveGap -= dt;
+          if (S.waveGap <= 0) queueWave();
+        }
       }
-    } else if (
-      S.enemies.length === 0
-    ) {
-      wave();
+    } else if (S.phase === 'boss' && !S.enemies.some((enemy) => enemy.boss)) {
+      finish(true);
+      return;
     }
 
     ui();
   }
 
-  // =========================================================
-  // DRAWING
-  // =========================================================
+  function damagePlayer(amount) {
+    // Звук удара — только на «входе» в урон, иначе он звучит каждый кадр.
+    if (P.hurt < 0.12) sfx.hurt();
+
+    P.hp -= amount;
+    P.hurt = clamp(P.hurt + amount * 0.9, 0, 1);
+  }
+
+  /* ==========================================================
+     ОТРИСОВКА
+     ========================================================== */
+
+  let bgGradient = null;
+  let vignette = null;
+
+  function buildGradients() {
+    bgGradient = X.createRadialGradient(W / 2, H / 2, 20, W / 2, H / 2, Math.max(W, H) * 0.75);
+    bgGradient.addColorStop(0, '#252650');
+    bgGradient.addColorStop(1, '#080b15');
+
+    vignette = X.createRadialGradient(
+      W / 2, H / 2, Math.min(W, H) * 0.24,
+      W / 2, H / 2, Math.max(W, H) * 0.72
+    );
+    vignette.addColorStop(0, 'rgba(0,0,0,0)');
+    vignette.addColorStop(1, 'rgba(0,0,0,0.55)');
+  }
 
   function circle(object, color) {
     X.beginPath();
-
-    X.arc(
-      object.x,
-      object.y,
-      object.r,
-      0,
-      Math.PI * 2
-    );
-
+    X.arc(object.x, object.y, Math.max(0.5, object.r), 0, Math.PI * 2);
     X.fillStyle = color;
     X.fill();
   }
 
   function drawBackground() {
-    const gradient =
-      X.createRadialGradient(
-        W / 2,
-        H / 2,
-        20,
-        W / 2,
-        H / 2,
-        680
-      );
+    X.fillStyle = bgGradient || '#0d1120';
+    X.fillRect(0, 0, W, H);
 
-    gradient.addColorStop(
-      0,
-      '#252650'
-    );
+    X.strokeStyle = '#6570ba18';
+    X.lineWidth = 1;
 
-    gradient.addColorStop(
-      1,
-      '#080b15'
-    );
-
-    X.fillStyle = gradient;
-    X.fillRect(
-      0,
-      0,
-      W,
-      H
-    );
-
-    X.strokeStyle =
-      '#6570ba18';
-
-    for (
-      let x = 0;
-      x < W;
-      x += 48
-    ) {
+    for (let x = 0; x < W; x += 48) {
       X.beginPath();
       X.moveTo(x, 0);
       X.lineTo(x, H);
       X.stroke();
     }
 
-    for (
-      let y = 0;
-      y < H;
-      y += 48
-    ) {
+    for (let y = 0; y < H; y += 48) {
       X.beginPath();
       X.moveTo(0, y);
       X.lineTo(W, y);
@@ -1113,130 +1387,71 @@
 
   function drawCorpses() {
     for (const corpse of S.corpses) {
-      circle(
-        corpse,
-        '#351833'
-      );
+      const active = corpse === S.raiseTarget;
+      const fade = clamp(corpse.t / 2, 0.25, 1);
 
-      X.strokeStyle =
-        shadowTypes[corpse.type]?.color ||
-        '#a66cfb';
+      X.globalAlpha = fade;
 
-      X.lineWidth = 2;
+      circle(corpse, '#351833');
+
+      X.strokeStyle = (SHADOW_TYPES[corpse.type] || SHADOW_TYPES.soldier).color;
+      X.lineWidth = active ? 3 : 2;
 
       X.beginPath();
-
-      X.arc(
-        corpse.x,
-        corpse.y,
-        corpse.r + 7,
-        0,
-        Math.PI * 2
-      );
-
+      X.arc(corpse.x, corpse.y, corpse.r + (active ? 9 : 7), 0, Math.PI * 2);
       X.stroke();
 
+      if (active) {
+        X.fillStyle = '#ded5ff';
+        X.font = 'bold 12px Rajdhani, Arial, sans-serif';
+        X.textAlign = 'center';
+        X.fillText('E', corpse.x, corpse.y - corpse.r - 14);
+      }
+
+      X.globalAlpha = 1;
       X.lineWidth = 1;
     }
   }
 
   function drawShadows() {
     for (const shadow of S.army) {
-      const cfg =
-        shadowTypes[shadow.type] ||
-        shadowTypes.soldier;
+      const cfg = SHADOW_TYPES[shadow.type] || SHADOW_TYPES.soldier;
+      const pulse = 1 + Math.sin(shadow.pulse * 4) * 0.06;
 
       X.shadowBlur = 18;
       X.shadowColor = cfg.color;
 
-      circle(
-        shadow,
-        cfg.color
-      );
+      circle({ x: shadow.x, y: shadow.y, r: shadow.r * pulse }, cfg.color);
 
       X.shadowBlur = 0;
 
-      circle(
-        {
-          x: shadow.x + 4,
-          y: shadow.y - 2,
-          r: 3
-        },
-        '#ded5ff'
-      );
+      circle({ x: shadow.x + 4, y: shadow.y - 2, r: 3 }, '#ded5ff');
     }
   }
 
   function drawEnemies() {
     for (const enemy of S.enemies) {
-      const cfg =
-        enemy.boss
-          ? {
-              color: '#e98d39',
-              core: '#4a2614'
-            }
-          : enemyTypes[enemy.type];
+      circle(enemy, enemy.hit > 0 ? '#ffffff' : enemy.color);
+      circle({ x: enemy.x, y: enemy.y, r: enemy.r * 0.5 }, enemy.core);
 
-      circle(
-        enemy,
-        enemy.hit > 0
-          ? '#ffffff'
-          : cfg.color
-      );
+      // Полоса здоровья
+      X.fillStyle = '#241421';
+      X.fillRect(enemy.x - enemy.r, enemy.y - enemy.r - 9, enemy.r * 2, 4);
 
-      circle(
-        {
-          x: enemy.x,
-          y: enemy.y,
-          r: enemy.r * 0.5
-        },
-        cfg.core
-      );
-
-      // HP bar
-      X.fillStyle =
-        '#241421';
-
+      X.fillStyle = enemy.boss ? '#ffb05e' : '#ff668d';
       X.fillRect(
         enemy.x - enemy.r,
         enemy.y - enemy.r - 9,
-        enemy.r * 2,
-        4
-      );
-
-      X.fillStyle =
-        enemy.boss
-          ? '#ffb05e'
-          : '#ff668d';
-
-      X.fillRect(
-        enemy.x - enemy.r,
-        enemy.y - enemy.r - 9,
-        enemy.r * 2 *
-          clamp(
-            enemy.hp / enemy.max,
-            0,
-            1
-          ),
+        enemy.r * 2 * clamp(enemy.hp / enemy.max, 0, 1),
         4
       );
 
       if (enemy.boss) {
-        X.strokeStyle =
-          '#ffb05e88';
-
+        X.strokeStyle = '#ffb05e88';
         X.lineWidth = 2;
 
         X.beginPath();
-
-        X.arc(
-          enemy.x,
-          enemy.y,
-          enemy.r + 7,
-          0,
-          Math.PI * 2
-        );
-
+        X.arc(enemy.x, enemy.y, enemy.r + 7, 0, Math.PI * 2);
         X.stroke();
 
         X.lineWidth = 1;
@@ -1247,53 +1462,24 @@
   function drawPlayer() {
     X.save();
 
-    X.translate(
-      P.x,
-      P.y
-    );
-
+    X.translate(P.x, P.y);
     X.rotate(P.face);
 
     X.shadowBlur = 20;
-    X.shadowColor =
-      '#9a7fff';
+    X.shadowColor = '#9a7fff';
 
-    circle(
-      {
-        x: 0,
-        y: 0,
-        r: P.r
-      },
-      '#8c70ee'
-    );
+    circle({ x: 0, y: 0, r: P.r }, P.hurt > 0.45 ? '#ff9db4' : '#8c70ee');
 
     X.shadowBlur = 0;
 
-    circle(
-      {
-        x: 7,
-        y: 0,
-        r: 6
-      },
-      '#e8e1ff'
-    );
+    circle({ x: 7, y: 0, r: 6 }, '#e8e1ff');
 
     if (P.flash > 0) {
-      X.strokeStyle =
-        '#ffffff';
-
+      X.strokeStyle = '#ffffff';
       X.lineWidth = 7;
 
       X.beginPath();
-
-      X.arc(
-        0,
-        0,
-        58,
-        -0.9,
-        0.9
-      );
-
+      X.arc(0, 0, P.attackRange * 0.62, -P.attackArc * 0.75, P.attackArc * 0.75);
       X.stroke();
 
       X.lineWidth = 1;
@@ -1304,36 +1490,48 @@
 
   function drawParticles() {
     for (const particle of S.fx) {
-      circle(
-        {
-          x: particle.x,
-          y: particle.y,
-          r: 2
-        },
-        particle.color
-      );
+      X.globalAlpha = clamp(particle.t * 2, 0, 1);
+      circle({ x: particle.x, y: particle.y, r: 2 }, particle.color);
+      X.globalAlpha = 1;
     }
   }
 
   function draw() {
     drawBackground();
+
+    const shake = P.hurt * 5;
+
+    X.save();
+
+    if (shake > 0.2) {
+      X.translate(rand(-shake, shake), rand(-shake, shake));
+    }
+
     drawCorpses();
     drawShadows();
     drawEnemies();
     drawPlayer();
     drawParticles();
+
+    X.restore();
+
+    if (vignette) {
+      X.fillStyle = vignette;
+      X.fillRect(0, 0, W, H);
+    }
+
+    if (P.hurt > 0.05) {
+      X.fillStyle = `rgba(190, 30, 70, ${(P.hurt * 0.28).toFixed(3)})`;
+      X.fillRect(0, 0, W, H);
+    }
   }
 
-  // =========================================================
-  // LOOP
-  // =========================================================
+  /* ==========================================================
+     ЦИКЛ
+     ========================================================== */
 
   function loop(time) {
-    const dt =
-      Math.min(
-        0.033,
-        (time - S.last) / 1000 || 0
-      );
+    const dt = clamp((time - S.last) / 1000 || 0, 0, 0.033);
 
     S.last = time;
 
@@ -1343,148 +1541,275 @@
     requestAnimationFrame(loop);
   }
 
-  // =========================================================
-  // SETUP
-  // =========================================================
+  /* ==========================================================
+     АДАПТАЦИЯ РАЗМЕРА
+     ========================================================== */
 
-  function setup() {
-    $('rank').textContent =
-      `ВРАТА РАНГА ${rank()}`;
+  function resize() {
+    const arena = $('arena') || C.parentElement;
+    const rect = arena.getBoundingClientRect();
 
-    $('portalname').textContent =
-      portalName();
+    const width = Math.max(280, Math.round(rect.width || 960));
+    const height = Math.max(240, Math.round(rect.height || 600));
 
-    ui();
+    W = width;
+    H = height;
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+
+    C.width = Math.round(W * DPR);
+    C.height = Math.round(H * DPR);
+
+    X.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    buildGradients();
+
+    P.x = clamp(P.x, P.r, W - P.r);
+    P.y = clamp(P.y, P.r, H - P.r);
+
+    for (const list of [S.enemies, S.army, S.corpses]) {
+      for (const item of list) {
+        item.x = clamp(item.x, 0, W);
+        item.y = clamp(item.y, 0, H);
+      }
+    }
+
+    draw();
   }
 
-  setup();
+  /* ==========================================================
+     ЭКРАНЫ
+     ========================================================== */
 
-  requestAnimationFrame(loop);
+  function setup() {
+    setText($('rank'), `ВРАТА РАНГА ${rank()}`);
+    setText($('portalname'), portalName());
 
-  // =========================================================
-  // KEYBOARD
-  // =========================================================
-
-  addEventListener(
-    'keydown',
-    event => {
-      const key =
-        event.key.toLowerCase();
-
-      K[key] = true;
-
-      if (event.code === 'Space') {
-        event.preventDefault();
-        attack();
-      }
-
-      if (event.code === 'KeyE') {
-        event.preventDefault();
-        raise();
-      }
-
-      if (event.code === 'Escape') {
-        event.preventDefault();
-        pause();
-      }
+    const soundButton = $('sound');
+    if (soundButton) {
+      soundButton.textContent = muted ? '🔇' : '🔊';
+      soundButton.title = muted ? 'Включить звук' : 'Выключить звук';
     }
-  );
 
-  addEventListener(
-    'keyup',
-    event => {
-      K[event.key.toLowerCase()] = false;
-    }
-  );
+    updateStats();
+    ui();
 
-  // =========================================================
-  // BUTTONS
-  // =========================================================
+    $('start').classList.remove('hidden');
+    $('end').classList.add('hidden');
+    $('upgrade').classList.add('hidden');
+    $('paused').classList.add('hidden');
+    $('banner').classList.add('hidden');
+    $('bossbar').classList.add('hidden');
+  }
 
-  $('play').onclick = start;
-
-  $('again').onclick = () => {
+  function nextPortal() {
     setup();
     start();
+  }
+
+  /* ==========================================================
+     КЛАВИАТУРА
+     ========================================================== */
+
+  function resetKeys() {
+    for (const key in K) K[key] = false;
+  }
+
+  const SCROLL_KEYS = ['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '];
+
+  addEventListener('keydown', (event) => {
+    const key = (event.key || '').toLowerCase();
+
+    K[key] = true;
+
+    if (SCROLL_KEYS.includes(key)) event.preventDefault();
+
+    if (S.choice) {
+      if (['1', '2', '3'].includes(key)) {
+        event.preventDefault();
+        takeUpgrade(Number(key) - 1);
+      }
+      return;
+    }
+
+    if (event.code === 'Space') {
+      event.preventDefault();
+
+      if (!S.go) {
+        start();
+      } else {
+        attack();
+      }
+    }
+
+    if (event.code === 'KeyE') {
+      event.preventDefault();
+      raise();
+    }
+
+    if (event.code === 'Escape') {
+      event.preventDefault();
+      pause();
+    }
+
+    if (event.code === 'Enter' && !S.go) {
+      event.preventDefault();
+      start();
+    }
+  });
+
+  addEventListener('keyup', (event) => {
+    K[(event.key || '').toLowerCase()] = false;
+  });
+
+  // Клавиши не должны «залипать» при потере фокуса.
+  addEventListener('blur', () => {
+    resetKeys();
+    if (S.go && !S.pause && !S.choice) pause(true);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) return;
+
+    resetKeys();
+    if (S.go && !S.pause && !S.choice) pause(true);
+  });
+
+  /* ==========================================================
+     КНОПКИ
+     ========================================================== */
+
+  $('sound').onclick = toggleSound;
+
+  $('play').onclick = () => {
+    audio(); // разблокируем звук по первому жесту пользователя
+    start();
+  };
+  $('again').onclick = nextPortal;
+  $('resume').onclick = () => pause(false);
+  $('pause').onclick = () => pause();
+  $('quit').onclick = () => finish(false);
+
+  // Экранные кнопки боя: на касание реагируем сразу, без задержки click.
+  let lastPointerDown = 0;
+
+  for (const id of ['attack', 'raise', 'ta', 'tr']) {
+    const button = $(id);
+
+    const act = () => {
+      if (id === 'attack' || id === 'ta') attack();
+      else raise();
+    };
+
+    button.onclick = (event) => {
+      if (event && event.preventDefault) event.preventDefault();
+      if (Date.now() - lastPointerDown < 500) return; // уже обработано pointerdown
+      act();
+    };
+
+    button.addEventListener('pointerdown', (event) => {
+      if (event.pointerType === 'mouse') return;
+
+      event.preventDefault();
+      lastPointerDown = Date.now();
+      act();
+    });
+  }
+
+  // Сброс прогресса: защита от случайного нажатия.
+  let resetArm = 0;
+
+  $('reset').onclick = () => {
+    if (Date.now() < resetArm) {
+      resetArm = 0;
+
+      meta.portal = 1;
+      meta.shadows = [];
+      meta.clears = 0;
+      meta.kills = 0;
+      meta.best = 1;
+
+      save();
+      setup();
+
+      $('reset').textContent = 'СБРОСИТЬ ПРОГРЕСС';
+      $('reset').classList.add('hidden');
+
+      return;
+    }
+
+    resetArm = Date.now() + 4000;
+    $('reset').textContent = 'НАЖМИ ЕЩЁ РАЗ ДЛЯ СБРОСА';
   };
 
-  $('attack').onclick = attack;
-  $('raise').onclick = raise;
+  /* ==========================================================
+     ВИРТУАЛЬНЫЙ СТИК
+     ========================================================== */
 
-  $('ta').onclick = attack;
-  $('tr').onclick = raise;
-
-  $('pause').onclick =
-    () => pause();
-
-  $('resume').onclick =
-    () => pause(false);
-
-  // =========================================================
-  // TOUCH JOYSTICK
-  // =========================================================
-
-  const joystick =
-    $('stick');
+  const joystick = $('stick');
+  const knob = joystick.querySelector('i');
 
   function moveStick(event) {
-    const rect =
-      joystick.getBoundingClientRect();
+    const rect = joystick.getBoundingClientRect();
 
-    let dx =
-      (
-        event.clientX -
-        rect.left -
-        rect.width / 2
-      ) /
-      (rect.width / 2);
+    let dx = (event.clientX - rect.left - rect.width / 2) / (rect.width / 2);
+    let dy = (event.clientY - rect.top - rect.height / 2) / (rect.height / 2);
 
-    let dy =
-      (
-        event.clientY -
-        rect.top -
-        rect.height / 2
-      ) /
-      (rect.height / 2);
-
-    const length =
-      Math.hypot(dx, dy);
+    const length = Math.hypot(dx, dy);
 
     if (length > 1) {
       dx /= length;
       dy /= length;
     }
 
-    stick = {
-      x: dx,
-      y: dy
-    };
+    stick = { x: dx, y: dy };
 
-    joystick.firstChild.style.transform =
-      `translate(${dx * 22}px, ${dy * 22}px)`;
+    if (knob) knob.style.transform = `translate(${dx * 22}px, ${dy * 22}px)`;
   }
 
-  joystick.onpointerdown =
-    event => {
-      joystick.setPointerCapture(
-        event.pointerId
-      );
+  function releaseStick() {
+    stick = null;
+    if (knob) knob.style.transform = 'translate(0,0)';
+  }
 
-      moveStick(event);
-    };
+  joystick.addEventListener('pointerdown', (event) => {
+    if (joystick.setPointerCapture) joystick.setPointerCapture(event.pointerId);
+    moveStick(event);
+    event.preventDefault();
+  });
 
-  joystick.onpointermove =
-    event => {
-      if (event.buttons) {
-        moveStick(event);
-      }
-    };
+  joystick.addEventListener('pointermove', (event) => {
+    if (!stick) return;
+    moveStick(event);
+    event.preventDefault();
+  });
 
-  joystick.onpointerup =
-    () => {
-      stick = null;
+  joystick.addEventListener('pointerup', releaseStick);
+  joystick.addEventListener('pointercancel', releaseStick);
+  joystick.addEventListener('lostpointercapture', releaseStick);
 
-      joystick.firstChild.style.transform =
-        'translate(0,0)';
-    };
+  /* ==========================================================
+     ЗАПУСК
+     ========================================================== */
+
+  resetPlayer();
+  setup();
+  resize();
+
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(resize).observe($('arena') || C.parentElement);
+  } else {
+    addEventListener('resize', resize);
+  }
+
+  requestAnimationFrame(loop);
+
+  /* Отладочный доступ: используется автотестами и консолью. */
+  window.ShadowAscendant = {
+    version: VERSION,
+    meta,
+    state: S,
+    player: P,
+    keys: K,
+    api: { start, pause, attack, raise, takeUpgrade, finish, spawn, spawnBoss: startBossPhase, resize, tick, draw, ui, save, toggleSound }
+  };
 })();
