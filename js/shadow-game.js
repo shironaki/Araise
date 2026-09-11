@@ -266,7 +266,12 @@
     }
 
     if (audioCtx.state === 'suspended' && audioCtx.resume) {
-      audioCtx.resume().catch(() => {});
+      try {
+        const pending = audioCtx.resume();
+        if (pending && pending.catch) pending.catch(() => {});
+      } catch (error) {
+        /* старые реализации WebAudio возвращают не промис */
+      }
     }
 
     return audioCtx;
