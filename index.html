@@ -1,1 +1,108 @@
-<!doctype html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Shadow Ascendant</title><link rel="stylesheet" href="style.css"></head><body><main class="game"><header><div><small>ПОРТАЛЬНЫЙ ОХОТНИК</small><h1>SHADOW <b>ASCENDANT</b></h1></div><button id="pause" title="Пауза (Esc)">Ⅱ</button></header><section class="hud"><div class="orb">✦</div><div class="vitals"><div><b id="level">УР. 1</b><span id="hptext">100 / 100</span></div><i class="bar hp"><em id="hp"></em></i><i class="bar xp"><em id="xp"></em></i></div><div class="shadows">В ХРАНИЛИЩЕ<strong id="vault">0</strong></div><div class="shadows">В БОЮ<strong id="shadows">0</strong></div></section><div class="arena"><canvas id="canvas" width="960" height="600"></canvas><section id="start" class="overlay"><small id="rank">ВРАТА РАНГА E</small><h2 id="portalname">ПРОБУЖДЕНИЕ</h2><p>Войди в портал. Тени, пережившие охоту, вернутся в хранилище.</p><button id="play" class="primary">ВОЙТИ В ПОРТАЛ</button><label>WASD / стрелки — движение · Пробел — удар · E — поднять тень · Esc — пауза</label></section><section id="upgrade" class="overlay hidden"><small>СИСТЕМА</small><h2>НОВЫЙ УРОВЕНЬ</h2><p>Выбери усиление</p><div id="choices"></div></section><section id="paused" class="overlay hidden"><small>ОХОТА ПРИОСТАНОВЛЕНА</small><h2>ПАУЗА</h2><p>Твоя теневая армия ждёт приказа.</p><button id="resume" class="primary">ПРОДОЛЖИТЬ</button><label>Esc — продолжить</label></section><section id="end" class="overlay hidden"><small id="endrank">ВРАТА ЗАКРЫТЫ</small><h2 id="endtitle"></h2><p id="endtext"></p><button id="again" class="primary">СЛЕДУЮЩИЙ ПОРТАЛ</button></section></div><footer><span id="objective">ЦЕЛЬ: войдите в портал</span><div><button id="attack">ПРОБЕЛ · УДАР</button><button id="raise">E · ВОССТАНЬ</button></div></footer><div id="touch"><div id="stick"><i></i></div><button id="ta">⚔</button><button id="tr">✦</button></div></main><script src="js/shadow-game.js"></script></body></html>
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Shadow Ascendant — аркадный экшен: зачищай порталы, поднимай павших врагов как теней и собирай теневую армию.">
+<meta name="theme-color" content="#060812">
+<meta name="color-scheme" content="dark">
+<title>Shadow Ascendant — Портал теней</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%238c70ee'/%3E%3Ccircle cx='21' cy='16' r='5' fill='%23e8e1ff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="game">
+  <header>
+    <div>
+      <small>ПОРТАЛЬНЫЙ ОХОТНИК</small>
+      <h1>SHADOW <b>ASCENDANT</b></h1>
+    </div>
+    <div class="controls">
+      <button id="sound" title="Выключить звук" aria-label="Звук">🔊</button>
+      <button id="pause" title="Пауза (Esc)" aria-label="Пауза">Ⅱ</button>
+    </div>
+  </header>
+
+  <section class="hud">
+    <div class="orb" aria-hidden="true">✦</div>
+    <div class="vitals">
+      <div><b id="level">УР. 1</b><span id="hptext">100 / 100</span></div>
+      <i class="bar hp"><em id="hp"></em></i>
+      <i class="bar xp"><em id="xp"></em></i>
+    </div>
+    <div class="shadows">В ХРАНИЛИЩЕ<strong id="vault">0</strong></div>
+    <div class="shadows">В БОЮ<strong id="shadows">0</strong></div>
+  </section>
+
+  <div class="arena" id="arena">
+    <canvas id="canvas" width="960" height="600" aria-label="Игровое поле"></canvas>
+
+    <div id="bossbar" class="bossbar hidden">
+      <span id="bossname">ХРАНИТЕЛЬ ВРАТ</span>
+      <i class="bar boss"><em id="bosshp"></em></i>
+    </div>
+
+    <div id="banner" class="banner hidden" aria-live="polite">
+      <strong id="bannertitle"></strong>
+      <span id="bannertext"></span>
+    </div>
+
+    <section id="start" class="overlay">
+      <small id="rank">ВРАТА РАНГА E</small>
+      <h2 id="portalname">ПРОБУЖДЕНИЕ</h2>
+      <p>Войди в портал. Тени, пережившие охоту, вернутся в хранилище.</p>
+      <button id="play" class="primary">ВОЙТИ В ПОРТАЛ</button>
+      <div class="stats">
+        <span>ХРАНИЛИЩЕ <b id="statvault">0</b></span>
+        <span>ОЧИЩЕНО ВРАТ <b id="statclears">0</b></span>
+        <span>ВСЕГО ПОБЕД <b id="statkills">0</b></span>
+      </div>
+      <label>WASD / стрелки — движение · Пробел — удар · E — поднять тень · Esc — пауза</label>
+      <button id="reset" class="ghost hidden">СБРОСИТЬ ПРОГРЕСС</button>
+    </section>
+
+    <section id="upgrade" class="overlay hidden">
+      <small>СИСТЕМА</small>
+      <h2>НОВЫЙ УРОВЕНЬ</h2>
+      <p id="upgradesub">Выбери усиление</p>
+      <div id="choices"></div>
+      <label>1 / 2 / 3 — выбрать усиление</label>
+    </section>
+
+    <section id="paused" class="overlay hidden">
+      <small>ОХОТА ПРИОСТАНОВЛЕНА</small>
+      <h2>ПАУЗА</h2>
+      <p>Твоя теневая армия ждёт приказа.</p>
+      <button id="resume" class="primary">ПРОДОЛЖИТЬ</button>
+      <button id="quit" class="ghost">ПОКИНУТЬ ПОРТАЛ</button>
+      <label>Esc — продолжить</label>
+    </section>
+
+    <section id="end" class="overlay hidden">
+      <small id="endrank">ВРАТА ЗАКРЫТЫ</small>
+      <h2 id="endtitle"></h2>
+      <p id="endtext"></p>
+      <ul id="endsummary" class="summary"></ul>
+      <button id="again" class="primary">СЛЕДУЮЩИЙ ПОРТАЛ</button>
+    </section>
+
+    <div id="touch">
+      <div id="stick"><i></i></div>
+      <button id="ta" aria-label="Удар">⚔</button>
+      <button id="tr" aria-label="Восстать">✦</button>
+    </div>
+  </div>
+
+  <footer>
+    <span id="objective">ЦЕЛЬ: войдите в портал</span>
+    <i class="bar obj"><em id="objbar"></em></i>
+    <div>
+      <button id="attack">ПРОБЕЛ · УДАР</button>
+      <button id="raise">E · ВОССТАНЬ</button>
+    </div>
+  </footer>
+</main>
+<script src="js/shadow-game.js"></script>
+</body>
+</html>
