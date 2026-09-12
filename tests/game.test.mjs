@@ -607,6 +607,14 @@ section('18. Игра без опциональной разметки');
   ok('выбор усиления клавишей работает без #choices',
     env.game.state.options.length === 0 && !env.game.state.choice && env.game.player.dmg >= dmg);
 
+  // ни #arena, ни родителя: игра берёт размеры canvas и живёт дальше
+  const bare = createEnv({ seed: 99, without: ['arena'] });
+  bare.canvasEl.getBoundingClientRect = () => ({ width: 640, height: 480 });
+  bare.game.api.start();
+  for (let i = 0; i < 120; i++) bare.frame();
+  ok('игра без обёртки #arena не падает', bare.errors.length === 0, JSON.stringify(bare.errors.map((e) => e.message)));
+  ok('без #arena бой всё равно идёт', bare.game.state.enemies.length > 0, `врагов ${bare.game.state.enemies.length}`);
+
   env.game.api.pause(true);
   ok('пауза без оверлея не падает', env.game.state.pause === true && env.errors.length === 0);
   env.game.api.pause(false);

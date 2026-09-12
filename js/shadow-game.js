@@ -1656,12 +1656,22 @@
      АДАПТАЦИЯ РАЗМЕРА
      ========================================================== */
 
-  function resize() {
+  /* Обёртка арены необязательна: без #arena берем размеры родителя canvas,
+     а если и его нет (игра вставлена в чужой DOM) — размер самого canvas. */
+  function arenaSize() {
     const arena = $('arena') || C.parentElement;
-    const rect = arena.getBoundingClientRect();
+    const rect = arena && arena.getBoundingClientRect ? arena.getBoundingClientRect() : C.getBoundingClientRect();
 
-    const width = Math.max(280, Math.round(rect.width || 960));
-    const height = Math.max(240, Math.round(rect.height || 600));
+    if (!rect) return { width: 960, height: 600 };
+
+    return { width: rect.width || 960, height: rect.height || 600 };
+  }
+
+  function resize() {
+    const box = arenaSize();
+
+    const width = Math.max(280, Math.round(box.width));
+    const height = Math.max(240, Math.round(box.height));
 
     W = width;
     H = height;
@@ -1920,11 +1930,15 @@
   setup();
   resize();
 
-  if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(resize).observe($('arena') || C.parentElement);
-  } else {
-    addEventListener('resize', resize);
+  const watched = $('arena') || C.parentElement;
+
+  if (typeof ResizeObserver !== 'undefined' && watched) {
+    new ResizeObserver(resize).observe(watched);
   }
+
+  // Окно слушаем всегда: при отсутствии #arena это единственный источник
+  // ресайза, а при наличии — страховка от поворота экрана без смены размеров.
+  addEventListener('resize', resize);
 
   requestAnimationFrame(loop);
 

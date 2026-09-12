@@ -183,7 +183,8 @@ export function createEnv(options = {}) {
   canvasEl.height = 600;
 
   const arenaEl = elements.get('arena');
-  arenaEl.rect = { width: options.width ?? 960, height: options.height ?? 600, left: 0, top: 0 };
+
+  if (arenaEl) arenaEl.rect = { width: options.width ?? 960, height: options.height ?? 600, left: 0, top: 0 };
 
   const store = new Map();
   if (options.storage) for (const [k, v] of Object.entries(options.storage)) store.set(k, v);
