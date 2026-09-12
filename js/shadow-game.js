@@ -17,11 +17,53 @@
      ========================================================== */
 
   const C = document.querySelector('#canvas');
+
+  // Без холста играть нечем: сообщаем в консоль и выходим, а не падаем
+  // с «Cannot read properties of null» на первой же строке.
+  if (!C || typeof C.getContext !== 'function') {
+    console.error('Shadow Ascendant: не найден <canvas id="canvas">');
+    return;
+  }
+
   const X = C.getContext('2d');
+
   const $ = (id) => document.getElementById(id);
+
+  /* Опциональные элементы — тач-панель, полоса босса, баннер, оверлеи —
+     могут отсутствовать в чужой разметке. Игра в этом случае продолжает
+     работать, просто без этой части интерфейса, поэтому все обращения к
+     элементам идут через эти безопасные обёртки. */
+  const setClass = (id, className, on) => {
+    const node = $(id);
+    if (node) node.classList.toggle(className, on);
+  };
+
+  const show = (id) => setClass(id, 'hidden', false);
+  const hide = (id) => setClass(id, 'hidden', true);
+
+  const bind = (id, handler) => {
+    const node = $(id);
+    if (node) node.onclick = handler;
+    return node;
+  };
+
+  const listen = (id, type, handler) => {
+    const node = $(id);
+    if (node) node.addEventListener(type, handler);
+  };
 
   const K = Object.create(null); // нажатые клавиши
   let stick = null;              // вектор виртуального стика (мобильные)
+
+  // Пользователь просил меньше движения — глушим тряску и красную вспышку.
+  const REDUCED_MOTION = (() => {
+    try {
+      const mq = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
+      return !!(mq && mq.matches);
+    } catch (error) {
+      return false;
+    }
+  })();
 
   /* Размер игрового мира в CSS-пикселях арены.
      Пересчитывается при ресайзе, поэтому игра одинаково
@@ -34,7 +76,7 @@
      КОНСТАНТЫ
      ========================================================== */
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.1.1';
   const SAVE_KEY = 'shadow-ascendant';
 
   const RANKS = ['E', 'D', 'C', 'B', 'A', 'S'];
@@ -48,6 +90,7 @@
   ];
 
   const MAX_FX = 420;        // предел частиц
+  const CORPSE_MAX = 60;     // предел живых трупов на арене
   const CORPSE_TTL = 9;      // сколько живёт труп под подъём
   const RAISE_RANGE = 96;    // радиус подъёма тени
   const BASE_ARMY_MAX = 8;   // базовый размер армии
@@ -231,6 +274,22 @@
     if (el.style.width !== value) el.style.width = value;
   };
 
+  const setHTML = (el, html) => {
+    if (el) el.innerHTML = html;
+  };
+
+  /* Монотонное время в мс: performance.now() там, где он есть.
+     В отличие от Date.now() не зависит от перевода системных часов. */
+  const now = () => (typeof performance !== 'undefined' && performance.now
+    ? performance.now()
+    : Date.now());
+
+  const formatTime = (seconds) => {
+    const total = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(total / 60);
+    return `${minutes}:${String(total % 60).padStart(2, '0')}`;
+  };
+
   /* ==========================================================
      ЗВУК (WebAudio, без внешних файлов)
      ========================================================== */
@@ -249,7 +308,9 @@
   function audio() {
     if (muted) return null;
 
-    if (!audioCtx) {
+    // Браузер мог закрыть контекст (нехватка памяти, фоновый режим) —
+    // тогда создаём новый, иначе звук не вернётся до перезагрузки.
+    if (!audioCtx || audioCtx.state === 'closed') {
       const AC = window.AudioContext || window.webkitAudioContext;
 
       if (!AC) {
@@ -265,7 +326,9 @@
       }
     }
 
-    if (audioCtx.state === 'suspended' && audioCtx.resume) {
+    /* «suspended» — автоблокировка до жеста пользователя, «interrupted» —
+       входящий звонок или фон на iOS. Будим контекст в обоих случаях. */
+    if (audioCtx.state !== 'running' && typeof audioCtx.resume === 'function') {
       try {
         const pending = audioCtx.resume();
         if (pending && pending.catch) pending.catch(() => {});
@@ -275,6 +338,19 @@
     }
 
     return audioCtx;
+  }
+
+  /* Звук выключен — не держим «живой» аудиопоток: в фоне он стоит
+     батареи и на мобильных мешает другим приложениям. */
+  function suspendAudio() {
+    if (!audioCtx || audioCtx.state !== 'running' || typeof audioCtx.suspend !== 'function') return;
+
+    try {
+      const pending = audioCtx.suspend();
+      if (pending && pending.catch) pending.catch(() => {});
+    } catch (error) {
+      /* старые реализации WebAudio возвращают не промис */
+    }
   }
 
   /* Короткий синтезированный сигнал: частота → частота за время dur. */
@@ -329,6 +405,23 @@
     lose: () => [300, 190].forEach((f, i) => tone(f, f * 0.5, 0.5, 'sine', 0.045, i * 0.16))
   };
 
+  // Кнопка всегда показывает реальное состояние: audio() умеет сам
+  // выключать звук, если WebAudio в этом браузере нет.
+  function syncSoundButton() {
+    const button = $('sound');
+    if (!button) return;
+
+    // Кнопка иконочная, поэтому и подпись, и aria-label — про действие.
+    const hint = muted ? 'Включить звук' : 'Выключить звук';
+
+    setText(button, muted ? '🔇' : '🔊');
+
+    if (button.title !== hint) button.title = hint;
+    if (button.getAttribute && button.getAttribute('aria-label') !== hint) {
+      button.setAttribute('aria-label', hint);
+    }
+  }
+
   function toggleSound() {
     muted = !muted;
 
@@ -338,13 +431,12 @@
       /* приватный режим — просто переключаем без сохранения */
     }
 
-    const button = $('sound');
-    if (button) {
-      button.textContent = muted ? '🔇' : '🔊';
-      button.title = muted ? 'Включить звук' : 'Выключить звук';
-    }
-
+    // При включении пробуем разбудить контекст прямо на жесте пользователя:
+    // позже, вне обработчика клика, браузер может не разрешить старт.
     if (!muted) sfx.level();
+    else suspendAudio();
+
+    syncSoundButton();
 
     return muted;
   }
@@ -787,14 +879,14 @@
 
     const boss = S.boss && S.enemies.includes(S.boss) ? S.boss : null;
 
-    $('bossbar').classList.toggle('hidden', !boss);
+    setClass('bossbar', 'hidden', !boss);
     if (boss) {
       setText($('bossname'), boss.name);
       setWidth($('bosshp'), (boss.hp / boss.max) * 100);
     }
 
     const a = S.announce;
-    $('banner').classList.toggle('hidden', !a);
+    setClass('banner', 'hidden', !a);
     if (a) {
       setText($('bannertitle'), a.title);
       setText($('bannertext'), a.text || '');
@@ -806,7 +898,11 @@
     setText($('statclears'), String(meta.clears));
     setText($('statkills'), String(meta.kills));
 
-    $('reset').classList.toggle(
+    setText($('statbest'), String(meta.best));
+
+    // Кнопка сброса нужна, только если есть что терять.
+    setClass(
+      'reset',
       'hidden',
       meta.clears === 0 && meta.kills === 0 && meta.portal === 1 && meta.shadows.length === 0
     );
@@ -822,11 +918,11 @@
     resetPlayer();
     resetRun();
 
-    $('start').classList.add('hidden');
-    $('end').classList.add('hidden');
-    $('upgrade').classList.add('hidden');
-    $('paused').classList.add('hidden');
-    $('pause').textContent = 'Ⅱ';
+    hide('start');
+    hide('end');
+    hide('upgrade');
+    hide('paused');
+    setText($('pause'), 'Ⅱ');
 
     deployArmy();
     queueWave();
@@ -844,9 +940,9 @@
     S.announce = null;
     S.spawnQueue.length = 0;
 
-    $('upgrade').classList.add('hidden');
-    $('paused').classList.add('hidden');
-    $('pause').textContent = 'Ⅱ';
+    hide('upgrade');
+    hide('paused');
+    setText($('pause'), 'Ⅱ');
 
     if (win) {
       // Тени, пережившие охоту, возвращаются в хранилище.
@@ -868,6 +964,7 @@
       ? [
         ['Убито существ', S.kills],
         ['Уровень охотника', P.lvl],
+        ['Время в портале', formatTime(S.time)],
         ['Тени вернулись', S.army.length],
         ['В хранилище', meta.shadows.length],
         ['Дальше', `ВРАТА РАНГА ${rank()}`]
@@ -875,23 +972,24 @@
       : [
         ['Убито существ', S.kills],
         ['Уровень охотника', P.lvl],
+        ['Время в портале', formatTime(S.time)],
         ['Тени потеряны', S.deployed.length],
         ['В хранилище', meta.shadows.length],
         ['Портал', `${meta.portal} · ${portalName()}`]
       ];
 
-    $('endrank').textContent = win ? `ПОРТАЛ РАНГА ${clearedRank} ЗАКРЫТ` : 'ОХОТА ПРЕРВАНА';
-    $('endtitle').textContent = win ? 'ВРАТА ОЧИЩЕНЫ' : 'ТЫ ПАЛ';
-    $('endtext').textContent = win
+    setText($('endrank'), win ? `ПОРТАЛ РАНГА ${clearedRank} ЗАКРЫТ` : 'ОХОТА ПРЕРВАНА');
+    setText($('endtitle'), win ? 'ВРАТА ОЧИЩЕНЫ' : 'ТЫ ПАЛ');
+    setText($('endtext'), win
       ? `Тени вернулись в хранилище: +${S.army.length}. Следующий портал будет опаснее.`
-      : `Тени, вышедшие с тобой, растворились во тьме. В хранилище осталось: ${meta.shadows.length}.`;
-    $('again').textContent = win ? 'СЛЕДУЮЩИЙ ПОРТАЛ' : 'ПОВТОРИТЬ ПОРТАЛ';
+      : `Тени, вышедшие с тобой, растворились во тьме. В хранилище осталось: ${meta.shadows.length}.`);
+    setText($('again'), win ? 'СЛЕДУЮЩИЙ ПОРТАЛ' : 'ПОВТОРИТЬ ПОРТАЛ');
 
-    $('endsummary').innerHTML = rows
+    setHTML($('endsummary'), rows
       .map(([key, value]) => `<li><span>${key}</span><b>${value}</b></li>`)
-      .join('');
+      .join(''));
 
-    $('end').classList.remove('hidden');
+    show('end');
 
     // Павшая армия растворяется во тьме.
     if (!win) S.army.length = 0;
@@ -912,8 +1010,8 @@
 
     S.pause = on;
 
-    $('paused').classList.toggle('hidden', !on);
-    $('pause').textContent = on ? '▶' : 'Ⅱ';
+    setClass('paused', 'hidden', !on);
+    setText($('pause'), on ? '▶' : 'Ⅱ');
   }
 
   /* ==========================================================
@@ -1010,7 +1108,7 @@
       S.pending = 0;
       S.options = [];
       S.choice = false;
-      $('upgrade').classList.add('hidden');
+      hide('upgrade');
       return;
     }
 
@@ -1021,20 +1119,24 @@
     setText($('upgradesub'), `Выбери усиление · уровень ${P.lvl}`);
 
     const box = $('choices');
-    box.innerHTML = '';
+    if (box) {
+      box.innerHTML = '';
 
-    S.options.forEach((upgrade, index) => {
-      const button = document.createElement('button');
+      S.options.forEach((upgrade, index) => {
+        const button = document.createElement('button');
 
-      button.type = 'button';
-      button.className = 'choice';
-      button.innerHTML = `<b>${upgrade.name}</b><span>${upgrade.desc}</span>`;
-      button.onclick = () => takeUpgrade(index);
+        button.type = 'button';
+        button.className = 'choice';
+        button.innerHTML = `<b>${upgrade.name}</b><span>${upgrade.desc}</span>`;
+        button.onclick = () => takeUpgrade(index);
 
-      box.appendChild(button);
-    });
+        box.appendChild(button);
+      });
+    }
 
-    $('upgrade').classList.remove('hidden');
+    // Без #choices экран всё равно открывается: карточки отсутствуют,
+    // но усиление можно взять с клавиатуры — 1 / 2 / 3.
+    show('upgrade');
   }
 
   function takeUpgrade(index) {
@@ -1101,13 +1203,16 @@
       type: enemy.type
     });
 
+    // Долгая охота не должна копить трупы: старшие растворяются первыми.
+    if (S.corpses.length > CORPSE_MAX) S.corpses.splice(0, S.corpses.length - CORPSE_MAX);
+
     S.kills += enemy.boss ? 4 : 1;
 
     if (P.lifesteal > 0) {
       P.hp = Math.min(P.maxHp, P.hp + P.lifesteal);
     }
 
-    gainXP(enemy.boss ? 55 : enemy.xp);
+    gainXP(enemy.xp);
 
     fx(enemy.x, enemy.y, enemy.boss ? '#ff9d45' : '#ef4d8d', enemy.boss ? 26 : 12);
 
@@ -1504,7 +1609,7 @@
   function draw() {
     drawBackground();
 
-    const shake = P.hurt * 5;
+    const shake = REDUCED_MOTION ? 0 : P.hurt * 5;
 
     X.save();
 
@@ -1525,7 +1630,7 @@
       X.fillRect(0, 0, W, H);
     }
 
-    if (P.hurt > 0.05) {
+    if (!REDUCED_MOTION && P.hurt > 0.05) {
       X.fillStyle = `rgba(190, 30, 70, ${(P.hurt * 0.28).toFixed(3)})`;
       X.fillRect(0, 0, W, H);
     }
@@ -1542,6 +1647,7 @@
 
     tick(dt);
     draw();
+    expireResetArm();
 
     requestAnimationFrame(loop);
   }
@@ -1589,21 +1695,17 @@
     setText($('rank'), `ВРАТА РАНГА ${rank()}`);
     setText($('portalname'), portalName());
 
-    const soundButton = $('sound');
-    if (soundButton) {
-      soundButton.textContent = muted ? '🔇' : '🔊';
-      soundButton.title = muted ? 'Включить звук' : 'Выключить звук';
-    }
+    syncSoundButton();
 
     updateStats();
     ui();
 
-    $('start').classList.remove('hidden');
-    $('end').classList.add('hidden');
-    $('upgrade').classList.add('hidden');
-    $('paused').classList.add('hidden');
-    $('banner').classList.add('hidden');
-    $('bossbar').classList.add('hidden');
+    show('start');
+    hide('end');
+    hide('upgrade');
+    hide('paused');
+    hide('banner');
+    hide('bossbar');
   }
 
   function nextPortal() {
@@ -1683,22 +1785,28 @@
      КНОПКИ
      ========================================================== */
 
-  $('sound').onclick = toggleSound;
+  bind('sound', () => toggleSound());
 
-  $('play').onclick = () => {
-    audio(); // разблокируем звук по первому жесту пользователя
+  // Первый клик по «Войти в портал» — тот самый жест, без которого
+  // браузер не даёт аудиоконтексту стартовать.
+  bind('play', () => {
+    audio();
     start();
-  };
-  $('again').onclick = nextPortal;
-  $('resume').onclick = () => pause(false);
-  $('pause').onclick = () => pause();
-  $('quit').onclick = () => finish(false);
+  });
+
+  bind('again', () => nextPortal());
+  bind('resume', () => pause(false));
+  bind('pause', () => pause());
+  bind('quit', () => finish(false));
 
   // Экранные кнопки боя: на касание реагируем сразу, без задержки click.
-  let lastPointerDown = 0;
+  // Отметка «уже обработано» — своя у каждой кнопки, иначе быстрый тап
+  // по ⚔ и затем по ✦ терялся бы как двойное нажатие.
+  const handledTouch = Object.create(null);
 
   for (const id of ['attack', 'raise', 'ta', 'tr']) {
     const button = $(id);
+    if (!button) continue;
 
     const act = () => {
       if (id === 'attack' || id === 'ta') attack();
@@ -1707,24 +1815,28 @@
 
     button.onclick = (event) => {
       if (event && event.preventDefault) event.preventDefault();
-      if (Date.now() - lastPointerDown < 500) return; // уже обработано pointerdown
+
+      if (now() - (handledTouch[id] || 0) < 500) return; // уже обработано pointerdown
+
       act();
     };
 
-    button.addEventListener('pointerdown', (event) => {
+    listen(id, 'pointerdown', (event) => {
       if (event.pointerType === 'mouse') return;
 
-      event.preventDefault();
-      lastPointerDown = Date.now();
+      if (event.preventDefault) event.preventDefault();
+      handledTouch[id] = now();
       act();
     });
   }
 
-  // Сброс прогресса: защита от случайного нажатия.
+  // Сброс прогресса: защита от случайного нажатия — два клика подряд.
+  const RESET_ARM_MS = 4000;
+
   let resetArm = 0;
 
-  $('reset').onclick = () => {
-    if (Date.now() < resetArm) {
+  bind('reset', () => {
+    if (now() < resetArm) {
       resetArm = 0;
 
       meta.portal = 1;
@@ -1736,22 +1848,28 @@
       save();
       setup();
 
-      $('reset').textContent = 'СБРОСИТЬ ПРОГРЕСС';
-      $('reset').classList.add('hidden');
-
       return;
     }
 
-    resetArm = Date.now() + 4000;
-    $('reset').textContent = 'НАЖМИ ЕЩЁ РАЗ ДЛЯ СБРОСА';
-  };
+    resetArm = now() + RESET_ARM_MS;
+    setText($('reset'), 'НАЖМИ ЕЩЁ РАЗ ДЛЯ СБРОСА');
+  });
+
+  // Просроченное подтверждение снимаем сами: кнопка не должна выглядеть
+  // «взведённой», когда второй клик уже ничего не сотрёт.
+  function expireResetArm() {
+    if (!resetArm || now() < resetArm) return;
+
+    resetArm = 0;
+    setText($('reset'), 'СБРОСИТЬ ПРОГРЕСС');
+  }
 
   /* ==========================================================
      ВИРТУАЛЬНЫЙ СТИК
      ========================================================== */
 
   const joystick = $('stick');
-  const knob = joystick.querySelector('i');
+  const knob = joystick && joystick.querySelector ? joystick.querySelector('i') : null;
 
   function moveStick(event) {
     const rect = joystick.getBoundingClientRect();
@@ -1776,21 +1894,23 @@
     if (knob) knob.style.transform = 'translate(0,0)';
   }
 
-  joystick.addEventListener('pointerdown', (event) => {
-    if (joystick.setPointerCapture) joystick.setPointerCapture(event.pointerId);
-    moveStick(event);
-    event.preventDefault();
-  });
+  if (joystick) {
+    joystick.addEventListener('pointerdown', (event) => {
+      if (joystick.setPointerCapture) joystick.setPointerCapture(event.pointerId);
+      moveStick(event);
+      event.preventDefault();
+    });
 
-  joystick.addEventListener('pointermove', (event) => {
-    if (!stick) return;
-    moveStick(event);
-    event.preventDefault();
-  });
+    joystick.addEventListener('pointermove', (event) => {
+      if (!stick) return;
+      moveStick(event);
+      event.preventDefault();
+    });
 
-  joystick.addEventListener('pointerup', releaseStick);
-  joystick.addEventListener('pointercancel', releaseStick);
-  joystick.addEventListener('lostpointercapture', releaseStick);
+    joystick.addEventListener('pointerup', releaseStick);
+    joystick.addEventListener('pointercancel', releaseStick);
+    joystick.addEventListener('lostpointercapture', releaseStick);
+  }
 
   /* ==========================================================
      ЗАПУСК
@@ -1815,6 +1935,22 @@
     state: S,
     player: P,
     keys: K,
-    api: { start, pause, attack, raise, takeUpgrade, finish, spawn, spawnBoss: startBossPhase, resize, tick, draw, ui, save, toggleSound }
+    api: {
+      start,
+      pause,
+      attack,
+      raise,
+      takeUpgrade,
+      offerUpgrade,
+      finish,
+      spawn,
+      spawnBoss: startBossPhase,
+      resize,
+      tick,
+      draw,
+      ui,
+      save,
+      toggleSound
+    }
   };
 })();

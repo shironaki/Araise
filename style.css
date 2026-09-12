@@ -1,4 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Unbounded:wght@600;800&display=swap');
+/* Шрифты Rajdhani и Unbounded подключаются ссылкой <link> в index.html:
+   импорт внутри CSS добавлял бы ещё один блокирующий рендер запрос. */
 
 :root {
   --bg: #060812;

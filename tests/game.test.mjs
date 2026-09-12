@@ -2,7 +2,12 @@
    Функциональные проверки Shadow Ascendant.
    Запуск: npm test  (или node tests/game.test.mjs)
    ============================================================ */
+import fs from 'node:fs';
 import { createEnv } from './dom-stub.mjs';
+
+const ROOT = new URL('../', import.meta.url);
+const read = (rel) => fs.readFileSync(new URL(rel, ROOT), 'utf8');
+const pkg = JSON.parse(read('package.json'));
 
 let passed = 0;
 let failed = 0;
@@ -509,7 +514,8 @@ section('16. Звук и служебные функции');
   })());
 
   ok('отладочный API доступен', !!env.game.api && typeof env.game.api.start === 'function');
-  ok('версия совпадает с package.json', env.game.version === '1.1.0', env.game.version);
+  ok('версия совпадает с package.json', env.game.version === pkg.version, env.game.version);
+  ok('звук без WebAudio отключается, а не падает', env.elements.get('sound').textContent === '🔇');
 
   env.elements.get('play').click();
   frames(env, 60 * 30); // 30 секунд боя
@@ -517,6 +523,161 @@ section('16. Звук и служебные функции');
   // без действий охотник погибает — но корректно, через экран итогов
   ok('охота завершилась корректно',
     env.game.state.go === false && !env.elements.get('end').classList.contains('hidden'));
+}
+
+/* ============ 17. Звук: синтез, блокировка, выключение ============ */
+section('17. Звук через заглушку WebAudio');
+{
+  const env = createEnv({ seed: 91, audio: 'modern' });
+
+  ok('до жеста пользователя контекст не создаётся', env.audio.created === 0 && env.audio.resumes === 0);
+
+  env.elements.get('play').click();
+  ok('первый клик разблокирует аудиоконтекст', env.audio.resumes === 1 && env.audioState === 'running', env.audioState);
+
+  env.game.api.attack();
+  ok('удар синтезирует осциллятор', env.audio.created === 1 && env.audio.started === 1, JSON.stringify(env.audio));
+  ok('осцилляторы останавливаются (не копятся)', env.audio.stopped === env.audio.started);
+
+  for (let i = 0; i < 240; i++) {
+    env.frame();
+    if (i % 40 === 0) env.game.api.attack();
+  }
+  ok('звук в бою не ломает игру', env.errors.length === 0, JSON.stringify(env.errors.map((e) => e.message)));
+  ok('звучащих осцилляторов разумно много', env.audio.created > 1, `осцилляторов ${env.audio.created}`);
+
+  env.elements.get('sound').click();
+  ok('выключение звука приостанавливает контекст', env.audio.suspends === 1 && env.audioState === 'suspended', env.audioState);
+
+  const before = env.audio.created;
+  env.game.api.attack();
+  ok('на mute осцилляторы не создаются', env.audio.created === before);
+
+  env.elements.get('sound').click();
+  env.game.api.attack();
+  ok('включение звука возвращает его', env.audio.created > before && env.audioState === 'running');
+  ok('состояние кнопки совпадает со звуком', env.elements.get('sound').textContent === '🔊');
+  ok('подпись кнопки для скринридера совпадает',
+    env.elements.get('sound').getAttribute('aria-label') === 'Выключить звук',
+    env.elements.get('sound').getAttribute('aria-label'));
+  env.elements.get('sound').click();
+  ok('на mute подпись меняется на «включить»',
+    env.elements.get('sound').getAttribute('aria-label') === 'Включить звук');
+}
+
+section('17b. Старые реализации WebAudio');
+{
+  const env = createEnv({ seed: 93, audio: 'legacy' });
+
+  env.elements.get('play').click();
+  for (let i = 0; i < 60; i++) {
+    env.game.api.attack();
+    env.frame();
+  }
+
+  ok('resume() без промиса не роняет игру', env.errors.length === 0, JSON.stringify(env.errors.map((e) => e.message)));
+  ok('звук на старой реализации всё же играет', env.audio.started > 0, `осцилляторов ${env.audio.started}`);
+  ok('suspend() отсутствует — mute не падает', (() => {
+    try { env.elements.get('sound').click(); return true; } catch (e) { return false; }
+  })());
+}
+
+/* ============ 18. Необязательные части интерфейса ============ */
+section('18. Игра без опциональной разметки');
+{
+  const env = createEnv({
+    seed: 97,
+    without: ['bossbar', 'banner', 'choices', 'upgrade', 'paused', 'stick', 'touch', 'ta', 'tr', 'attack', 'raise', 'sound', 'pause', 'reset']
+  });
+
+  ok('загрузка без тач-панели и баннеров не падает', env.errors.length === 0, JSON.stringify(env.errors.map((e) => e.message)));
+
+  env.game.api.start();
+  for (let i = 0; i < 180; i++) env.frame();
+  ok('бой идёт без полос босса и баннера', env.game.state.enemies.length > 0 && env.errors.length === 0);
+
+  // усиления остаются доступны с клавиатуры, даже когда карточек нет в DOM
+  env.game.state.pending = 1;
+  env.game.api.offerUpgrade();
+  ok('экран усилений открывается и без #choices', env.game.state.choice === true);
+  ok('карточек нет — и падать нечему', env.errors.length === 0);
+
+  const dmg = env.game.player.dmg;
+  env.key('keydown', '1', 'Digit1');
+  ok('выбор усиления клавишей работает без #choices',
+    env.game.state.options.length === 0 && !env.game.state.choice && env.game.player.dmg >= dmg);
+
+  env.game.api.pause(true);
+  ok('пауза без оверлея не падает', env.game.state.pause === true && env.errors.length === 0);
+  env.game.api.pause(false);
+  env.game.api.finish(false);
+  ok('итог без #end тоже безопасен', env.game.state.go === false && env.errors.length === 0);
+}
+
+/* ============ 19. Лимиты трупов и сводка итогов ============ */
+section('19. Лимиты и сводка');
+{
+  const env = createEnv({ seed: 101 });
+  env.game.api.start();
+  env.frame();
+
+  for (let i = 0; i < 200; i++) env.game.api.spawn('soldier');
+  env.game.state.enemies.forEach((e) => { e.hp = 0; });
+  env.frame();
+
+  ok('трупы ограничены на самом деле', env.game.state.corpses.length === 60, `трупов ${env.game.state.corpses.length}`);
+  ok('старшие трупы уходят первыми', env.game.state.corpses.every((c) => c.t > 0));
+
+  const env2 = createEnv({ seed: 103, storage: { 'shadow-ascendant': JSON.stringify({ v: 2, portal: 3, shadows: [], clears: 2, kills: 40, best: 9 }) } });
+  ok('рекорд портала показан на стартовом экране', env2.elements.get('statbest').textContent === '9', env2.elements.get('statbest').textContent);
+  ok('метка статистики — про убийства, а не победы', /УБИТО ВСЕГО/.test(read('index.html')) && !/ВСЕГО ПОБЕД/.test(read('index.html')));
+
+  env2.game.api.start();
+  for (let i = 0; i < 30; i++) env2.frame();
+  env2.game.api.finish(false);
+  const summary = env2.elements.get('endsummary').innerHTML;
+  ok('в сводке есть время в портале', /Время в портале/.test(summary) && /0:00/.test(summary), summary.slice(0, 80));
+}
+
+/* ============ 20. Подтверждение сброса прогресса ============ */
+section('20. Сброс прогресса');
+{
+  const env = createEnv({ seed: 107, storage: { 'shadow-ascendant': JSON.stringify({ v: 2, portal: 3, shadows: ['soldier'], clears: 2, kills: 40, best: 3 }) } });
+  const reset = env.elements.get('reset');
+
+  ok('кнопка сброса видна, есть что терять', !reset.classList.contains('hidden'));
+
+  reset.click();
+  ok('первый клик только взводит подтверждение', /НАЖМИ ЕЩЁ РАЗ/.test(reset.textContent) && env.game.meta.portal === 3);
+
+  frames(env, 320); // ~5.3 с на 60 fps: окно подтверждения истекло
+  ok('подтверждение гаснет само', reset.textContent === 'СБРОСИТЬ ПРОГРЕСС');
+
+  reset.click();
+  ok('просроченное подтверждение ничего не стирает', env.game.meta.portal === 3);
+  reset.click();
+  ok('второй клик подряд сбрасывает прогресс', env.game.meta.portal === 1 && env.game.meta.shadows.length === 0);
+  ok('сброс сохранён', JSON.parse(env.store.get('shadow-ascendant')).portal === 1);
+  ok('после сброса кнопка прячется', reset.classList.contains('hidden'));
+}
+
+/* ============ 21. Контракт разметки и версий ============ */
+section('21. Контракт разметки, версий и стилей');
+{
+  const html = read('index.html');
+  const js = read('js/shadow-game.js');
+  const css = read('style.css');
+
+  const present = new Set([...html.matchAll(/id="([a-zA-Z0-9_-]+)"/g)].map((m) => m[1]));
+  const wanted = [...new Set([...js.matchAll(/\$\('([a-zA-Z0-9_-]+)'\)/g)].map((m) => m[1]))];
+  const missing = wanted.filter((id) => !present.has(id));
+
+  ok('игра не обращается к несуществующим элементам', missing.length === 0, `нет в разметке: ${missing.join(', ')}`);
+  ok('игра использует id из разметки (не пустой поиск)', wanted.length >= 25, `${wanted.length} id`);
+  ok('шрифты подключены ссылкой, а не блокирующим @import', !/@import/.test(css) && /fonts\.googleapis\.com\/css2/.test(html));
+  ok('preconnect на оба шрифтовых источника', /rel="preconnect" href="https:\/\/fonts\.googleapis\.com"/.test(html) && /rel="preconnect" href="https:\/\/fonts\.gstatic\.com"/.test(html));
+  ok('VERSION в коде = версия пакета', new RegExp(`const VERSION = '${pkg.version}'`).test(js), pkg.version);
+  ok('canvas имеет явные размеры и aria-label', /<canvas id="canvas" width="\d+" height="\d+" aria-label=/.test(html));
 }
 
 console.log(`\n=== Итог: ${passed} успешно, ${failed} провалено ===`);

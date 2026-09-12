@@ -1,6 +1,6 @@
 {
   "name": "shadow-ascendant",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Shadow Ascendant — аркадный рогалик на canvas: зачищай порталы, поднимай павших врагов как теней и собирай теневую армию.",
   "scripts": {
