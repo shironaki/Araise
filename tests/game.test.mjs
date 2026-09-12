@@ -535,6 +535,11 @@ section('17. Звук через заглушку WebAudio');
   env.elements.get('play').click();
   ok('первый клик разблокирует аудиоконтекст', env.audio.resumes === 1 && env.audioState === 'running', env.audioState);
 
+  // запуск с клавиатуры — тот же жест, звук должен завестись сразу
+  const keyboard = createEnv({ seed: 92, audio: 'modern' });
+  keyboard.key('keydown', ' ', 'Space');
+  ok('пробел на стартовом экране тоже разблокирует звук', keyboard.audio.resumes === 1 && keyboard.audioState === 'running');
+
   env.game.api.attack();
   ok('удар синтезирует осциллятор', env.audio.created === 1 && env.audio.started === 1, JSON.stringify(env.audio));
   ok('осцилляторы останавливаются (не копятся)', env.audio.stopped === env.audio.started);
